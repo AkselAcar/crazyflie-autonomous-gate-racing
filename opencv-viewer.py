@@ -44,6 +44,7 @@ import struct
 import numpy as np
 import cv2
 import os
+from datetime import datetime
 
 # Args for setting IP/port of AI-deck. Default settings are for when
 # AI-deck is in AP mode.
@@ -53,9 +54,20 @@ parser.add_argument("-p", type=int, default=5000, metavar="port", help="AI-deck 
 parser.add_argument('--save', action='store_true', help="Save streamed images")
 args = parser.parse_args()
 
+
 if args.save:
-    os.makedirs("stream_out/raw", exist_ok=True)
-    os.makedirs("stream_out/debayer", exist_ok=True)
+    # Crée une chaîne de caractères avec la date et l'heure (ex: "2026-05-04_11-27-11")
+    timestamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+    
+    # On définit les chemins des dossiers
+    path_raw = f"stream_out/{timestamp}/raw"
+    path_color = f"stream_out/{timestamp}/color"
+    
+    # On crée les dossiers (exist_ok=True évite une erreur si le dossier existe déjà)
+    os.makedirs(path_raw, exist_ok=True)
+    os.makedirs(path_color, exist_ok=True)
+    
+    print(f"Les images seront sauvegardées dans : stream_out/{timestamp}/")
 
 print("Connecting to socket on {}:{}...".format(args.n, args.p))
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -130,15 +142,15 @@ try:
                 cv2.imshow('Raw', bayer_img)
                 cv2.imshow('Color', color_img)
                 if args.save:
-                    cv2.imwrite(f"stream_out/raw/img_{count:06d}.png", bayer_img)
-                    cv2.imwrite(f"stream_out/debayer/img_{count:06d}.png", color_img)
+                        cv2.imwrite(f"{path_raw}/img_{count:06d}.png", bayer_img)
+                        cv2.imwrite(f"{path_color}/img_{count:06d}.png", color_img)
                 cv2.waitKey(1)
             else:
                 with open("img.jpeg", "wb") as f:
                     f.write(imgStream)
                 nparr = np.frombuffer(imgStream, np.uint8)
                 decoded = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                cv2.imshow('JPEG', decoded)
+                #cv2.imshow('JPEG', decoded)
                 cv2.waitKey(1)
 
 except KeyboardInterrupt:
