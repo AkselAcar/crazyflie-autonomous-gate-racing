@@ -11,7 +11,7 @@ from math import atan2, cos, pi, sin
 
 import numpy as np
 
-from Hardware_Project import config
+import config
 
 
 def normalize_angle(a: float) -> float:

@@ -1,8 +1,8 @@
 """Synchronously record AI Deck images and Lighthouse poses.
 
-Usage (run from C:\\Users\\niels\\Desktop\\Aerial_Robotics):
+Usage (run from C:\\Users\\niels\\Desktop\\Aerial_Robotics\\Hardware_Project):
 
-    python -m Hardware_Project.debug.image_capture --duration 30 --rate 5
+    python debug/image_capture.py --duration 30 --rate 5
 
 The drone is NOT controlled by this script — fly it manually with
 cfclient (or hand-walk it). Each captured frame is saved as PNG and one
@@ -16,15 +16,18 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 
-from Hardware_Project.hardware.ai_deck_stream import AIDeckStream
-from Hardware_Project.hardware.crazyflie_link import CrazyflieLink
+# Allow running this script directly from Hardware_Project/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from hardware.ai_deck_stream import AIDeckStream
+from hardware.crazyflie_link import CrazyflieLink
 
 log = logging.getLogger(__name__)
 

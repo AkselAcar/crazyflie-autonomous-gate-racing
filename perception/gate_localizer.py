@@ -13,8 +13,8 @@ from math import atan2, cos, pi, sin
 import numpy as np
 from scipy.optimize import least_squares
 
-from Hardware_Project import config
-from Hardware_Project.planning.geometry import (
+import config
+from planning.geometry import (
     angle_diff,
     cam_position_world,
     euler2rotmat,

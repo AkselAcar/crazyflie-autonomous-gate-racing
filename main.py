@@ -24,10 +24,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from Hardware_Project import config
-from Hardware_Project.hardware.ai_deck_stream import AIDeckStream
-from Hardware_Project.hardware.crazyflie_link import CrazyflieLink
-from Hardware_Project.planning.fsm import GateFSM
+import config
+from hardware.ai_deck_stream import AIDeckStream
+from hardware.crazyflie_link import CrazyflieLink
+from planning.fsm import GateFSM
 
 log = logging.getLogger(__name__)
 

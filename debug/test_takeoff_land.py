@@ -1,8 +1,8 @@
 """Smoke test: connect, take off, hover, land.
 
-Run from C:\\Users\\niels\\Desktop\\Aerial_Robotics:
+Run from C:\\Users\\niels\\Desktop\\Aerial_Robotics\\Hardware_Project:
 
-    python -m Hardware_Project.debug.test_takeoff_land
+    python debug/test_takeoff_land.py
 
 This is the first hardware test to run after wiring everything up. It
 exercises only the radio link and the High-Level Commander (no camera,
@@ -13,10 +13,16 @@ before moving on to image capture or autonomous flight.
 from __future__ import annotations
 
 import logging
+import sys
 import time
+from pathlib import Path
 
-from Hardware_Project import config
-from Hardware_Project.hardware.crazyflie_link import CrazyflieLink
+# Allow running this script directly from Hardware_Project/ — make the
+# project root (this file's grandparent) the first entry on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config
+from hardware.crazyflie_link import CrazyflieLink
 
 log = logging.getLogger(__name__)
 

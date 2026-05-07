@@ -26,19 +26,19 @@ from math import atan2, cos, sin
 import cv2
 import numpy as np
 
-from Hardware_Project import config
-from Hardware_Project.hardware.crazyflie_link import CrazyflieLink, DroneState
-from Hardware_Project.perception.gate_detector import detect_all_gate_contours
-from Hardware_Project.perception.gate_localizer import (
+import config
+from hardware.crazyflie_link import CrazyflieLink, DroneState
+from perception.gate_detector import detect_all_gate_contours
+from perception.gate_localizer import (
     enforce_correct_yaw_orientation,
     gate_pixel_width,
     localize_gate_reprojection,
 )
-from Hardware_Project.perception.gate_triangulator import (
+from perception.gate_triangulator import (
     gate_params_from_corners,
     triangulate_point_multi,
 )
-from Hardware_Project.planning.geometry import (
+from planning.geometry import (
     R_cam2world,
     angle_diff,
     angular_bounds_for_segment,

@@ -24,7 +24,7 @@ import time
 import cv2
 import numpy as np
 
-from Hardware_Project import config
+import config
 
 log = logging.getLogger(__name__)
 

@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from Hardware_Project import config
+import config
 
 # cflib is only needed when actually connecting to the drone. Importing
 # it lazily lets the rest of the package (FSM, geometry, perception) be

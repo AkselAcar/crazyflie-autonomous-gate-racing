@@ -12,7 +12,7 @@ from math import atan2
 
 import numpy as np
 
-from Hardware_Project import config
+import config
 
 
 def pixel_to_cam_ray(u: float, v: float) -> np.ndarray:

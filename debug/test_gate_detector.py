@@ -1,9 +1,8 @@
 """Run the gate detector over a folder of images and save side-by-side debug.
 
-Usage (run from C:\\Users\\niels\\Desktop\\Aerial_Robotics):
+Usage (run from C:\\Users\\niels\\Desktop\\Aerial_Robotics\\Hardware_Project):
 
-    python -m Hardware_Project.debug.test_gate_detector \\
-        Hardware_Project/stream_out/2026_05_04-14_06_56/raw
+    python debug/test_gate_detector.py stream_out/2026_05_04-14_06_56/raw
 
 Each output image is composed as ``[ original | mask | annotated ]`` so
 threshold / morphology / contour issues are easy to spot at a glance.
@@ -14,12 +13,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from Hardware_Project.perception.gate_detector import (
+# Allow running this script directly from Hardware_Project/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from perception.gate_detector import (
     annotate,
     build_mask,
     detect_all_gate_contours,
