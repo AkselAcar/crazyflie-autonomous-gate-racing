@@ -29,10 +29,16 @@ def angle_diff(target: float, current: float) -> float:
 
 
 def angular_bounds_for_segment(seg_idx: int) -> tuple[float, float]:
-    """Replicate the Webots angular_bounds computation."""
+    """Sector ``seg_idx`` lower/upper angular bounds in world frame.
+
+    The shift ``config.SECTOR_ANGLE_OFFSET`` aligns sector 0 (the take-off
+    sector) with the direction of TAKE_OFF_POS — change it (not this
+    function) when the Lighthouse frame is redefined.
+    """
     lo = (2 * seg_idx - 0.5) * config.SEGMENT_ANGULAR_SIZE
     hi = (2 * seg_idx + 0.5) * config.SEGMENT_ANGULAR_SIZE
-    return normalize_angle(lo + pi), normalize_angle(hi + pi)
+    shift = config.SECTOR_ANGLE_OFFSET
+    return normalize_angle(lo + shift), normalize_angle(hi + shift)
 
 
 def gate_search_corners(gate_idx: int) -> list[np.ndarray]:

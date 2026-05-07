@@ -28,14 +28,23 @@ NUM_GATES: int = 5
 NUM_SEGMENTS: int = NUM_GATES + 1
 SEGMENT_ANGULAR_SIZE: float = pi / NUM_SEGMENTS  # = pi/6
 
+# Angular offset (rad) that aligns sector 0 (the take-off sector) with the
+# direction of TAKE_OFF_POS as seen from CIRCLE_CENTRE. With the
+# Lighthouse frame currently in use (take-off at (1, 0), centre at
+# (0, 0)), the take-off direction is +x → angle 0, so SECTOR_ANGLE_OFFSET
+# is 0. In Webots the take-off was at (1, 4) relative to centre (4, 4) →
+# direction -x → offset was pi. If the Lighthouse frame is ever
+# redefined, the only constant to change is this one.
+SECTOR_ANGLE_OFFSET: float = 0.0
+
 # Map bounds (used for sanity checks on planned waypoints)
 X_BOUNDS: tuple[float, float] = (-2.0, 2.0)
 Y_BOUNDS: tuple[float, float] = (-1.5, 1.5)
 Z_BOUNDS: tuple[float, float] = (0.05, 2.0)
 
 # Take-off and exploration
-TAKE_OFF_POS: np.ndarray = np.array([-1.0, 0.0, 0.05])
-TAKE_OFF_YAW: float = 0.0  # facing +x, towards the centre of the arena
+TAKE_OFF_POS: np.ndarray = np.array([1.0, 0.0, 0.05])
+TAKE_OFF_YAW: float = pi  # facing -x, towards the centre of the arena
 EXPLORE_ALT: float = 1.3
 
 # Gate physical properties — variable, same as Webots assignment.
