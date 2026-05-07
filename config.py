@@ -1,0 +1,100 @@
+"""Hardware project configuration constants.
+
+Single source of truth for map geometry, camera intrinsics, control
+parameters and FSM tuning. Keeping everything here means the perception
+and planning modules stay environment-agnostic (the same FSM can in
+principle target sim or hardware just by swapping this file).
+"""
+
+from __future__ import annotations
+
+from math import pi, tan
+
+import numpy as np
+
+# Crazyflie radio + AI Deck network
+CF_URI: str = "radio://0/80/2M/E7E7E7E710"
+AI_DECK_IP: str = "192.168.4.1"
+AI_DECK_PORT: int = 5000
+
+# Map geometry
+# Lighthouse origin is at the centre of the arena. CCW angular sectors of
+# 60° (= pi/6 half-width). Same shape as Webots, but the "circle" is now
+# centred on (0, 0) instead of (4, 4).
+CIRCLE_CENTRE: np.ndarray = np.array([0.0, 0.0])
+INNER_RADIUS: float = 0.2
+OUTER_RADIUS: float = 1.5
+NUM_GATES: int = 5
+NUM_SEGMENTS: int = NUM_GATES + 1
+SEGMENT_ANGULAR_SIZE: float = pi / NUM_SEGMENTS  # = pi/6
+
+# Map bounds (used for sanity checks on planned waypoints)
+X_BOUNDS: tuple[float, float] = (-2.0, 2.0)
+Y_BOUNDS: tuple[float, float] = (-1.5, 1.5)
+Z_BOUNDS: tuple[float, float] = (0.05, 2.0)
+
+# Take-off and exploration
+TAKE_OFF_POS: np.ndarray = np.array([-1.0, 0.0, 0.05])
+TAKE_OFF_YAW: float = 0.0  # facing +x, towards the centre of the arena
+EXPLORE_ALT: float = 1.3
+
+# Gate physical properties — variable, same as Webots assignment.
+# Width is unknown a priori and stays a free parameter in reprojection.
+GATE_OPENING_HEIGHT: float = 0.4
+GATE_WIDTH_BOUNDS: tuple[float, float] = (0.3, 0.5)
+
+# AI Deck camera (HM01B0, no calibration — nominal values)
+# Resolution and FOV come from the AI Deck 1.1 datasheet. Refine after a
+# first calibration pass on a known target.
+CAM_WIDTH: int = 324
+CAM_HEIGHT: int = 244
+CAM_FOV_H: float = pi * 87.0 / 180.0  # ~87° horizontal FOV
+FOCAL_PX: float = (CAM_WIDTH / 2.0) / tan(CAM_FOV_H / 2.0)  # ~170 px
+CAM_CX: float = CAM_WIDTH / 2.0
+CAM_CY: float = CAM_HEIGHT / 2.0
+
+# Camera mounted UNDER the drone, pointing forward (verified from the
+# captured image: text reads left-to-right and gates appear at horizon
+# level, so the camera is forward-looking and in normal orientation).
+# Body frame: x=forward, y=left, z=up.
+CAM_OFFSET_BODY: np.ndarray = np.array([0.03, 0.0, -0.025])
+
+# Camera frame: x=right (image), y=down (image), z=forward (out of lens).
+# Same orientation as Webots — the only thing that changed is the body
+# offset above, not the camera optical axis.
+R_CAM2BODY: np.ndarray = np.array([
+    [0,  0,  1],   # x_body (fwd)  =  z_cam
+    [-1, 0,  0],   # y_body (left) = -x_cam
+    [0, -1,  0],   # z_body (up)   = -y_cam
+], dtype=np.float64)
+
+# Detection thresholds (LED-based, will be tuned on real images).
+# LEDs in the penumbra produce nearly-saturated pixels (>200) so a high
+# threshold rejects most of the lab background while keeping the full
+# gate ring.
+LED_BRIGHTNESS_THRESHOLD: int = 200       # 0–255 grayscale
+DET_MIN_AREA: int = 200                   # px², discards tiny reflections
+DET_BORDER_MARGIN: int = 3                # reject contours touching the border
+
+# Approach + triangulation tuning
+APPROACH_DIST: float = 0.6                # m, smaller arena → closer approach
+TRAVERSE_OVERSHOOT: float = 0.05          # m past the gate plane
+TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
+MAX_APPROACH_PHOTOS: int = 30
+APPROACH_PHOTO_SPACING_M: float = 0.04
+APPROACH_TRI_ALPHA: float = 0.20
+CONVERGENCE_WINDOW: int = 8
+CONVERGENCE_MIN_SAMPLES: int = 6
+CONVERGENCE_STD_THRESHOLD: float = 0.04
+LOST_GATE_TIMEOUT_S: float = 3.0
+
+# High-Level Commander durations (seconds). Tune per phase to control speed.
+HLC_TAKEOFF_DURATION: float = 2.0
+HLC_LAND_DURATION: float = 2.5
+HLC_YAW_SCAN_DURATION: float = 3.0      # full sweep across the yaw range
+HLC_APPROACH_TICK_DURATION: float = 1.5  # per re-issued go_to during triangulation
+HLC_TRAVERSE_DURATION: float = 1.2
+
+# Logging
+LOG_DIR: str = "logs"
+PLOT_DIR: str = "camera_plots"
