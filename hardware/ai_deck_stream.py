@@ -51,7 +51,22 @@ class AIDeckStream:
     def __enter__(self) -> "AIDeckStream":
         log.info("Connecting to AI Deck %s:%d", *self._addr)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.connect(self._addr)
+        # Short connect timeout so we fail fast (vs Windows' default 21s)
+        # when the PC isn't on the AI Deck's WiFi AP.
+        self._sock.settimeout(5.0)
+        try:
+            self._sock.connect(self._addr)
+        except (TimeoutError, OSError) as e:
+            self._sock.close()
+            self._sock = None
+            raise ConnectionError(
+                f"Could not reach AI Deck at {self._addr[0]}:{self._addr[1]} "
+                f"({e}). Make sure the PC's WiFi is connected to the "
+                f"AI Deck AP (SSID like 'Bitcraze AI-deck-XXXXXX'), "
+                f"or run main.py with --no-camera."
+            ) from e
+        # Restore blocking mode for the streaming thread.
+        self._sock.settimeout(None)
         self._thread = threading.Thread(
             target=self._loop, name="AIDeckStream", daemon=True,
         )
