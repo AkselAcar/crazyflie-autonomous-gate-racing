@@ -94,6 +94,11 @@ class GateFSM:
     YAW_RATE = 0.6           # rad/s
     MIN_SEG_DURATION = 0.6   # s — floor on any go_to duration
 
+    # YAW_SCAN runs slower than the general yaw rate so the camera frames
+    # are not motion-blurred and the detector has more shots at each gate.
+    SCAN_YAW_RATE = 0.30     # rad/s (~17°/s)
+    SCAN_MIN_DURATION = 2.0  # s — floor on a single yaw-scan leg
+
     # Detection / triangulation tuning (reuses config)
     MIN_GATE_PX_WIDTH = 18
 
@@ -261,6 +266,11 @@ class GateFSM:
         self._scan_anchor_xy = drone_pos[:2].copy()
         self._cmd_target = None  # force re-issue at the new target
 
+    def _scan_duration(self, current_yaw: float, target_yaw: float) -> float:
+        """Slow yaw rotation during scanning to limit motion blur."""
+        return max(self.SCAN_MIN_DURATION,
+                   abs(angle_diff(target_yaw, current_yaw)) / self.SCAN_YAW_RATE)
+
     def _do_yaw_scan(self, sd: DroneState, image: np.ndarray | None,
                      drone_pos: np.ndarray) -> None:
         # Run the detector regardless of phase.
@@ -272,12 +282,16 @@ class GateFSM:
         z = config.EXPLORE_ALT
 
         if self._scan_phase == 0:
+            duration = self._scan_duration(sd.yaw, self._scan_yaw_target)
             self._issue_goto(anchor[0], anchor[1], z, self._scan_yaw_target,
+                             duration=duration,
                              cur_pos=drone_pos, cur_yaw=sd.yaw)
             if self._at_target(sd, target_yaw=self._scan_yaw_target):
                 self._scan_phase = 1
         elif self._scan_phase == 1:
+            duration = self._scan_duration(sd.yaw, self._scan_second_target)
             self._issue_goto(anchor[0], anchor[1], z, self._scan_second_target,
+                             duration=duration,
                              cur_pos=drone_pos, cur_yaw=sd.yaw)
             if self._at_target(sd, target_yaw=self._scan_second_target):
                 self._scan_phase = 2

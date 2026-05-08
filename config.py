@@ -45,7 +45,7 @@ Z_BOUNDS: tuple[float, float] = (0.05, 2.0)
 # Take-off and exploration
 TAKE_OFF_POS: np.ndarray = np.array([1.0, 0.0, 0.05])
 TAKE_OFF_YAW: float = pi  # facing -x, towards the centre of the arena
-EXPLORE_ALT: float = 1.3
+EXPLORE_ALT: float = 1.0
 
 # Gate physical properties — variable, same as Webots assignment.
 # Width is unknown a priori and stays a free parameter in reprojection.

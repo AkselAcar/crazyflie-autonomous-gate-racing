@@ -24,9 +24,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 import config
 from hardware.ai_deck_stream import AIDeckStream
 from hardware.crazyflie_link import CrazyflieLink
+from perception.gate_detector import (
+    annotate,
+    build_mask,
+    detect_all_gate_contours,
+)
 from planning.fsm import GateFSM
 
 log = logging.getLogger(__name__)
@@ -41,6 +49,9 @@ def main() -> None:
                         help="run without the AI Deck stream (FSM will not detect gates)")
     parser.add_argument("--log-dir", default=str(
         Path(__file__).resolve().parent / "logs"))
+    parser.add_argument("--save-every", type=int, default=0,
+                        help="save every Nth camera frame as "
+                             "[original|mask|annotated] composite (0 = off)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -67,6 +78,11 @@ def main() -> None:
             fsm = GateFSM(cf)
             t_start = time.monotonic()
             next_t = t_start
+            frame_count = 0
+            saved_count = 0
+            frames_dir = run_dir / "frames"
+            if args.save_every > 0:
+                frames_dir.mkdir(parents=True, exist_ok=True)
 
             try:
                 while True:
@@ -90,6 +106,12 @@ def main() -> None:
                         f"{sd.v_x:.3f}", f"{sd.v_y:.3f}", f"{sd.v_z:.3f}",
                     ])
 
+                    if args.save_every > 0 and image is not None:
+                        frame_count += 1
+                        if frame_count % args.save_every == 0:
+                            _save_debug_frame(image, frames_dir, saved_count, fsm)
+                            saved_count += 1
+
                     if not still_running:
                         log.info("Mission complete")
                         break
@@ -102,6 +124,26 @@ def main() -> None:
             # Whether we exit normally, by timeout, by Ctrl+C or by exception,
             # the CrazyflieLink __exit__ runs the emergency-land procedure
             # before closing the radio link.
+
+
+def _save_debug_frame(image: np.ndarray, frames_dir: Path,
+                      idx: int, fsm: GateFSM) -> None:
+    """Save [original | mask | annotated] composite with FSM state overlay."""
+    dets = detect_all_gate_contours(image)
+    mask = build_mask(image)
+    composed = np.hstack([
+        cv2.cvtColor(image, cv2.COLOR_GRAY2BGR),
+        cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR),
+        annotate(image, dets),
+    ])
+    state_name = fsm._STATE_NAMES.get(fsm.state, "?")
+    cv2.putText(
+        composed,
+        f"#{idx:05d} {state_name} gate={fsm.current_gate} dets={len(dets)}",
+        (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+        (0, 255, 255), 1, cv2.LINE_AA,
+    )
+    cv2.imwrite(str(frames_dir / f"img_{idx:05d}.png"), composed)
 
 
 class _NullStream:
