@@ -94,18 +94,14 @@ def main() -> None:
                         log.info("Mission complete")
                         break
                     if time.monotonic() - t_start > MISSION_TIMEOUT_S:
-                        log.error("Mission timeout (%.0fs) — emergency land",
+                        log.error("Mission timeout (%.0fs) — aborting",
                                   MISSION_TIMEOUT_S)
-                        cf.land(0.05, config.HLC_LAND_DURATION)
-                        time.sleep(config.HLC_LAND_DURATION + 1.0)
                         break
             except KeyboardInterrupt:
-                log.warning("Interrupted by user — landing")
-                try:
-                    cf.land(0.05, config.HLC_LAND_DURATION)
-                    time.sleep(config.HLC_LAND_DURATION + 1.0)
-                except Exception as e:
-                    log.error("Emergency land failed: %s", e)
+                log.warning("Interrupted by user")
+            # Whether we exit normally, by timeout, by Ctrl+C or by exception,
+            # the CrazyflieLink __exit__ runs the emergency-land procedure
+            # before closing the radio link.
 
 
 class _NullStream:

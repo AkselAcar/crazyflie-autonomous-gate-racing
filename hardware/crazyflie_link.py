@@ -97,6 +97,30 @@ class CrazyflieLink:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        # Emergency-land safety: if we're tearing down while the drone
+        # is airborne (Ctrl+C, exception, or just script end), ALWAYS
+        # try to land before closing the link. Without this, the radio
+        # link drops, the firmware watchdog cuts motors, and the drone
+        # falls. Skipped if z is near 0 (no point) or if cf isn't set.
+        if self._cf is not None:
+            try:
+                s = self.get_state()
+                airborne = s.z_global > 0.10
+            except Exception:
+                airborne = False
+
+            if airborne:
+                log.warning("Emergency land (z=%.2f m) before disconnect",
+                            s.z_global)
+                try:
+                    self._cf.high_level_commander.land(
+                        0.05, config.HLC_LAND_DURATION)
+                    # Bounded wait — we MUST close the link eventually
+                    # even if the land command somehow doesn't complete.
+                    time.sleep(config.HLC_LAND_DURATION + 0.8)
+                except Exception as e:
+                    log.error("Emergency land failed: %s", e)
+
         if self._scf is not None and self._cf is not None:
             try:
                 self._cf.high_level_commander.stop()
@@ -110,6 +134,21 @@ class CrazyflieLink:
         assert self._cf is not None
         has_flow, has_lh = self._detect_decks()
         self._cf.param.set_value("stabilizer.estimator", "2")  # Kalman
+
+        # Flow Deck-only mode is prone to optical-flow oscillation when
+        # the drone is stationary (Kalman over-trusts the noisy flow
+        # signal, resulting in phantom drift). Tighten the noise model
+        # to match the standard Bitcraze pattern. These params are
+        # IRRELEVANT under Lighthouse and would confuse it — guard.
+        if has_flow and not has_lh:
+            try:
+                self._cf.param.set_value("motion.adaptive", "0")
+                self._cf.param.set_value("motion.flowStdFixed", "10.0")
+                log.info("Flow Deck noise model tightened "
+                         "(motion.adaptive=0, motion.flowStdFixed=10.0)")
+            except Exception as e:
+                log.warning("Could not set Flow Deck params: %s", e)
+
         # Reset estimator so the position snaps to the current take-off pose.
         self._cf.param.set_value("kalman.resetEstimation", "1")
         time.sleep(0.1)
