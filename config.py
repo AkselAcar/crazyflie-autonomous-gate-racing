@@ -91,11 +91,20 @@ TRAVERSE_OVERSHOOT: float = 0.05          # m past the gate plane
 TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
 MAX_APPROACH_PHOTOS: int = 30
 APPROACH_PHOTO_SPACING_M: float = 0.04
-APPROACH_TRI_ALPHA: float = 0.20
+APPROACH_TRI_ALPHA: float = 0.12  # was 0.20 — slower so a bad triangulation has less impact
 CONVERGENCE_WINDOW: int = 8
 CONVERGENCE_MIN_SAMPLES: int = 6
 CONVERGENCE_STD_THRESHOLD: float = 0.04
 LOST_GATE_TIMEOUT_S: float = 3.0
+
+# Triangulation sanity gates. When the drone moves roughly along the gate
+# normal, the photo baseline is nearly parallel to the camera rays and
+# depth is poorly constrained — the resulting "triangulated" gate is
+# flattened/rotated. Reject any update that diverges from the YAW_SCAN
+# prior by more than these thresholds.
+TRI_REJECT_CENTER_DRIFT: float = 0.30   # m  (distance from current estimate)
+TRI_REJECT_YAW_DRIFT: float = 0.5       # rad (~30°)
+TRI_REJECT_WIDTH_DRIFT: float = 0.20    # m
 
 # High-Level Commander durations (seconds). Tune per phase to control speed.
 HLC_TAKEOFF_DURATION: float = 2.0

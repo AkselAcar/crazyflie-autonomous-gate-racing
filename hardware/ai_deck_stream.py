@@ -48,25 +48,44 @@ class AIDeckStream:
         self._thread: threading.Thread | None = None
 
     # Lifecycle
+    _CONNECT_ATTEMPTS: int = 4
+    _CONNECT_TIMEOUT: float = 5.0
+    _CONNECT_RETRY_DELAY: float = 2.0
+
     def __enter__(self) -> "AIDeckStream":
         log.info("Connecting to AI Deck %s:%d", *self._addr)
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Short connect timeout so we fail fast (vs Windows' default 21s)
-        # when the PC isn't on the AI Deck's WiFi AP.
-        self._sock.settimeout(5.0)
-        try:
-            self._sock.connect(self._addr)
-        except (TimeoutError, OSError) as e:
-            self._sock.close()
-            self._sock = None
+        last_err: Exception | None = None
+        for attempt in range(1, self._CONNECT_ATTEMPTS + 1):
+            try:
+                self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._sock.settimeout(self._CONNECT_TIMEOUT)
+                self._sock.connect(self._addr)
+                self._sock.settimeout(None)
+                break
+            except (TimeoutError, OSError) as e:
+                last_err = e
+                if self._sock is not None:
+                    try:
+                        self._sock.close()
+                    except OSError:
+                        pass
+                    self._sock = None
+                if attempt < self._CONNECT_ATTEMPTS:
+                    log.warning(
+                        "AI Deck connect attempt %d/%d failed (%s) — "
+                        "retrying in %.1fs (firmware may need to release "
+                        "the previous connection slot)",
+                        attempt, self._CONNECT_ATTEMPTS, e,
+                        self._CONNECT_RETRY_DELAY,
+                    )
+                    time.sleep(self._CONNECT_RETRY_DELAY)
+        else:
             raise ConnectionError(
                 f"Could not reach AI Deck at {self._addr[0]}:{self._addr[1]} "
-                f"({e}). Make sure the PC's WiFi is connected to the "
-                f"AI Deck AP (SSID like 'Bitcraze AI-deck-XXXXXX'), "
-                f"or run main.py with --no-camera."
-            ) from e
-        # Restore blocking mode for the streaming thread.
-        self._sock.settimeout(None)
+                f"after {self._CONNECT_ATTEMPTS} attempts ({last_err}). "
+                f"Try power-cycling the drone, or use --no-camera."
+            ) from last_err
+
         self._thread = threading.Thread(
             target=self._loop, name="AIDeckStream", daemon=True,
         )
@@ -76,10 +95,9 @@ class AIDeckStream:
     def __exit__(self, *_args) -> None:
         self._stop.set()
         if self._sock is not None:
-            try:
-                self._sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            # Match opencv-viewer.py: simple close, no shutdown(). The AI
+            # Deck firmware seems to handle this best — shutdown() and
+            # SO_LINGER both made the next-run connect WORSE (timeouts).
             try:
                 self._sock.close()
             except OSError:

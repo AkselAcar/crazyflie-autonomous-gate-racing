@@ -406,6 +406,27 @@ class GateFSM:
 
         gate = self.gates[self.current_gate]
         assert gate is not None
+
+        # Sanity reject: when the drone approaches roughly along the gate's
+        # normal, the photo baseline is parallel to the camera rays, depth
+        # is poorly constrained, and the triangulated rectangle ends up
+        # flattened along its depth axis (wrong yaw, compressed sides).
+        # The YAW_SCAN reprojection is a strong prior — refuse updates
+        # that drift too far from it as they're almost certainly bad
+        # triangulation, not real refinement.
+        center_drift = float(np.linalg.norm(center[:2] - gate.position[:2]))
+        yaw_drift = abs(angle_diff(tri_yaw, gate.yaw))
+        width_drift = abs(tri_width - gate.width)
+        if center_drift > config.TRI_REJECT_CENTER_DRIFT:
+            log.debug("Triangulation rejected (Δcenter=%.2fm)", center_drift)
+            return False
+        if yaw_drift > config.TRI_REJECT_YAW_DRIFT:
+            log.debug("Triangulation rejected (Δyaw=%.2frad)", yaw_drift)
+            return False
+        if width_drift > config.TRI_REJECT_WIDTH_DRIFT:
+            log.debug("Triangulation rejected (Δwidth=%.2fm)", width_drift)
+            return False
+
         a = config.APPROACH_TRI_ALPHA
         gate.position = (1 - a) * gate.position + a * center
         gate.yaw = normalize_angle(

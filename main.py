@@ -80,6 +80,8 @@ def main() -> None:
             next_t = t_start
             frame_count = 0
             saved_count = 0
+            ticks_with_image = 0
+            ticks_without_image = 0
             frames_dir = run_dir / "frames"
             if args.save_every > 0:
                 frames_dir.mkdir(parents=True, exist_ok=True)
@@ -106,11 +108,20 @@ def main() -> None:
                         f"{sd.v_x:.3f}", f"{sd.v_y:.3f}", f"{sd.v_z:.3f}",
                     ])
 
-                    if args.save_every > 0 and image is not None:
-                        frame_count += 1
-                        if frame_count % args.save_every == 0:
-                            _save_debug_frame(image, frames_dir, saved_count, fsm)
-                            saved_count += 1
+                    if args.save_every > 0:
+                        if image is None:
+                            ticks_without_image += 1
+                        else:
+                            ticks_with_image += 1
+                            frame_count += 1
+                            if frame_count % args.save_every == 0:
+                                try:
+                                    _save_debug_frame(image, frames_dir,
+                                                      saved_count, fsm)
+                                    saved_count += 1
+                                except Exception as e:
+                                    log.error("Save failed at frame %d: %s",
+                                              saved_count, e)
 
                     if not still_running:
                         log.info("Mission complete")
@@ -121,6 +132,12 @@ def main() -> None:
                         break
             except KeyboardInterrupt:
                 log.warning("Interrupted by user")
+            finally:
+                if args.save_every > 0:
+                    log.info("Image save summary: %d saved / %d ticks with "
+                             "image / %d ticks without image",
+                             saved_count, ticks_with_image,
+                             ticks_without_image)
             # Whether we exit normally, by timeout, by Ctrl+C or by exception,
             # the CrazyflieLink __exit__ runs the emergency-land procedure
             # before closing the radio link.
