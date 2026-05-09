@@ -123,6 +123,7 @@ PLOT_DIR: str = "camera_plots"
 #                       LAP 2&3
 # ===================================================
 VEL_LIM = 25.0
-ACC_LIM = 250.0
-PTS_PER_METER = 13.0
-TARGET_AVG_SPEED = 1.5
+ACC_LIM = 250.0 
+PTS_PER_METER = 30.0        # Number of points per meter for trajectory
+TARGET_AVG_SPEED = 0.1      # Target averaged speed over trajectory [m/s]
+APPROACH_DIST = 0.15        # Distance of points before and after the gate [m]

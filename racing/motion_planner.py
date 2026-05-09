@@ -1,8 +1,12 @@
+import sys
+from pathlib import Path
+
+# Ensure root directory is in path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import numpy as np
-from lib.a_star_3D import AStar3D
-import panda as pd
+import pandas as pd
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import config
 
 
@@ -12,15 +16,15 @@ class MotionPlanner3D():
     def __init__(self, gate_pos_csv_path="./gate_pos_csv/gates_info.csv"):
 
         self.trajectory_setpoints = None
-        gate_pos_df = pd.read_csv(gate_pos_csv_path)
-        path_waypoints = gate_pos_df[["x", "y", "z"]].values.tolist()
+        self.path_waypoints, self.gate_pos, self.gate_orientations, self.gate_widths, self.gate_heights = self.construct_waypoints(gate_pos_csv_path)
+        print(f"Successfully loaded and constructed {len(self.path_waypoints)} gate waypoints from {gate_pos_csv_path}.")
 
         self.vel_lim = config.VEL_LIM                   # Velocity limit of the drone (m/s)
         self.acc_lim = config.ACC_LIM                   # Acceleration limit of the drone (m/s²)
         self.points_per_meter = config.PTS_PER_METER    # Number of points per meter 
 
         # Determine the number of segments of the path
-        self.distances = [np.linalg.norm(np.array(path_waypoints[i+1]) - np.array(path_waypoints[i])) for i in range(len(path_waypoints)-1)]
+        self.distances = [np.linalg.norm(np.array(self.path_waypoints[i+1]) - np.array(self.path_waypoints[i])) for i in range(len(self.path_waypoints)-1)]
         total_dist = sum(self.distances)
 
         target_avg_speed = config.TARGET_AVG_SPEED
@@ -38,11 +42,49 @@ class MotionPlanner3D():
     
         self.times = np.array(self.times)
 
-        self.run_planner(self.path)
+        self.run_planner()
 
+    def construct_waypoints(self, gate_pos_csv_path):
+        offset_dist = config.APPROACH_DIST
 
-    def run_planner(self, path_waypoints):    
-        poly_coeffs = self.compute_poly_coefficients(path_waypoints)
+        gate_pos_df = pd.read_csv(gate_pos_csv_path)
+        gate_pos = gate_pos_df[["x", "y", "z"]].values.T
+        gate_orientations = gate_pos_df["theta"].values
+        gate_widths = gate_pos_df["width"].values
+        gate_heights = gate_pos_df["height"].values
+
+        waypoints = [(1.5, 0.0, 0.75)] # TODO: Change!! Starting point (x, y, z)
+        
+        num_gates = gate_pos.shape[1]
+        for index in range(num_gates+1):
+            i = index % num_gates
+
+            yaw = gate_orientations[i]
+            p_center = gate_pos[:, i].flatten()
+            
+            # Based on your holonomic controller, the normal vector points opposite to the approach
+            dx = offset_dist * np.cos(yaw)
+            dy = offset_dist * np.sin(yaw)
+
+            # Approach Point
+            p_approach = p_center.copy()
+            p_approach[0] -= dx
+            p_approach[1] -= dy
+            waypoints.append(tuple(p_approach))
+            
+            # Center Point
+            waypoints.append(tuple(p_center))
+            
+            # Exit Point
+            p_exit = p_center.copy()
+            p_exit[0] += dx
+            p_exit[1] += dy
+            waypoints.append(tuple(p_exit))
+            
+        return np.array(waypoints), gate_pos, gate_orientations, gate_widths, gate_heights
+
+    def run_planner(self):    
+        poly_coeffs = self.compute_poly_coefficients()
         self.trajectory_setpoints, self.time_setpoints = self.poly_setpoint_extraction(poly_coeffs)
 
     def compute_poly_matrix(self, t):
@@ -62,18 +104,16 @@ class MotionPlanner3D():
 
         return A_m
 
-    def compute_poly_coefficients(self, path_waypoints):
+    def compute_poly_coefficients(self):
         
         # Computes a minimum jerk trajectory given time and position waypoints.
-        # Inputs:
-        # - path_waypoints: The sequence of input path waypoints provided by the path-planner, including the start and final goal position: Vector of m waypoints, consisting of a tuple with three reference positions each as provided by AStar
         # Outputs:
         # - poly_coeffs: The polynomial coefficients for each segment of the path [6(m-1) x 3]
 
         # Use the following variables and the class function self.compute_poly_matrix(t) to solve for the polynomial coefficients
         
         seg_times = np.diff(self.times) #The time taken to complete each path segment
-        m = len(path_waypoints) #Number of path waypoints (including start and end)
+        m = len(self.path_waypoints) #Number of path waypoints (including start and end)
         poly_coeffs = np.zeros((6*(m-1),3))
 
         # YOUR SOLUTION HERE ---------------------------------------------------------------------------------- ## 
@@ -84,7 +124,7 @@ class MotionPlanner3D():
         for dim in range(3):  # Compute for x, y, and z separately
             A = np.zeros((6*(m-1), 6*(m-1)))
             b = np.zeros(6*(m-1))
-            pos = np.array([p[dim] for p in path_waypoints])
+            pos = np.array([p[dim] for p in self.path_waypoints])
             A_0 = self.compute_poly_matrix(0) # A_0 gives the constraint factor matrix A_m for any segment at t=0, this is valid for the starting conditions at every path segment
 
             # SOLUTION
@@ -214,3 +254,50 @@ class MotionPlanner3D():
         # ---------------------------------------------------------------------------------------------------- ##
 
         return trajectory_setpoints, time_setpoints
+    
+    def plot(self):
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot trajectory setpoints
+        ax.scatter(self.path_waypoints[:,0], self.path_waypoints[:,1], self.path_waypoints[:,2], c='g', marker='x', s=100, label='Waypoints')
+        ax.plot(self.trajectory_setpoints[:,0], self.trajectory_setpoints[:,1], self.trajectory_setpoints[:,2], c='b', label='Trajectory')
+        
+        # Plot gates as vertical rectangles
+        for i in range(self.gate_pos.shape[1]):
+            center = self.gate_pos[:, i]
+            yaw = self.gate_orientations[i]
+            width = self.gate_widths[i]
+            height = self.gate_heights[i]
+            
+            # Yaw angle defines the approach direction: (cos(yaw), sin(yaw))
+            # Gate left-right axis (perpendicular to approach): (-sin(yaw), cos(yaw), 0)
+            # Gate up-down axis (vertical): (0, 0, 1)
+            left_right = np.array([-np.sin(yaw), np.cos(yaw), 0])
+            up_down = np.array([0, 0, 1])
+            
+            # Corner offsets from center
+            half_w = width / 2
+            half_h = height / 2
+            
+            # Four corners of the gate rectangle
+            corners = [
+                center - half_w * left_right - half_h * up_down,  # bottom-left
+                center + half_w * left_right - half_h * up_down,  # bottom-right
+                center + half_w * left_right + half_h * up_down,  # top-right
+                center - half_w * left_right + half_h * up_down,  # top-left
+                center - half_w * left_right - half_h * up_down,  # close the square
+            ]
+            corners = np.array(corners)
+            
+            # Plot gate rectangle
+            ax.plot(corners[:, 0], corners[:, 1], corners[:, 2], 'r-', linewidth=2)
+        
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        ax.legend()
+        plt.show()
+
+test = MotionPlanner3D(gate_pos_csv_path="./gate_pos_csv/gates_info_example.csv")
+test.plot()
