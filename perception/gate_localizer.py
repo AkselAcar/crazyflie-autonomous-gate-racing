@@ -2,8 +2,10 @@
 
 Given the 4 image-space corners of a detected gate plus the drone pose,
 we solve for the gate state ``[X, Y, Z, yaw, width]`` that minimizes
-the reprojection error. This produces a coarse first estimate from a
-single frame; ``gate_triangulator`` then refines it across multiple views.
+the reprojection error. Used for both the initial YAW_SCAN estimate and
+for refining the estimate from each new viewpoint during APPROACH (a
+warm-started single-view solve per frame replaces the unstable
+along-axis multi-view triangulation).
 """
 
 from __future__ import annotations

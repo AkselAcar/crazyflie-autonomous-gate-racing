@@ -85,26 +85,23 @@ LED_BRIGHTNESS_THRESHOLD: int = 200       # 0–255 grayscale
 DET_MIN_AREA: int = 200                   # px², discards tiny reflections
 DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 
-# Approach + triangulation tuning
+# Approach + reprojection-refinement tuning
 APPROACH_DIST: float = 0.6                # m, smaller arena → closer approach
 TRAVERSE_OVERSHOOT: float = 0.05          # m past the gate plane
 TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
-MAX_APPROACH_PHOTOS: int = 30
-APPROACH_PHOTO_SPACING_M: float = 0.04
-APPROACH_TRI_ALPHA: float = 0.12  # was 0.20 — slower so a bad triangulation has less impact
+APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8
 CONVERGENCE_MIN_SAMPLES: int = 6
 CONVERGENCE_STD_THRESHOLD: float = 0.04
 LOST_GATE_TIMEOUT_S: float = 3.0
 
-# Triangulation sanity gates. When the drone moves roughly along the gate
-# normal, the photo baseline is nearly parallel to the camera rays and
-# depth is poorly constrained — the resulting "triangulated" gate is
-# flattened/rotated. Reject any update that diverges from the YAW_SCAN
-# prior by more than these thresholds.
-TRI_REJECT_CENTER_DRIFT: float = 0.30   # m  (distance from current estimate)
-TRI_REJECT_YAW_DRIFT: float = 0.5       # rad (~30°)
-TRI_REJECT_WIDTH_DRIFT: float = 0.20    # m
+# Sanity rejection thresholds for per-frame reprojection refinement.
+# Each new frame re-runs single-view reprojection from the current drone
+# pose; the YAW_SCAN result is a strong prior so any update diverging by
+# more than these thresholds is treated as an outlier and dropped.
+REFINE_REJECT_CENTER_DRIFT: float = 0.30   # m  (xy distance from current estimate)
+REFINE_REJECT_YAW_DRIFT: float = 0.5       # rad (~30°)
+REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
 
 # High-Level Commander durations (seconds). Tune per phase to control speed.
 HLC_TAKEOFF_DURATION: float = 2.0

@@ -34,10 +34,6 @@ from perception.gate_localizer import (
     gate_pixel_width,
     localize_gate_reprojection,
 )
-from perception.gate_triangulator import (
-    gate_params_from_corners,
-    triangulate_point_multi,
-)
 from planning.geometry import (
     R_cam2world,
     angle_diff,
@@ -122,9 +118,9 @@ class GateFSM:
         self._scan_best_cost: float = float("inf")
         self._scan_anchor_xy: np.ndarray | None = None  # hover xy during scan
 
-        # Approach state
-        self._approach_batch: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        self._approach_last_obs_pos: np.ndarray | None = None
+        # Approach state — single-view reprojection only, no multi-view
+        # triangulation (which was unstable when the drone moves along
+        # the gate normal: parallel rays → poor depth estimate).
         self._approach_pos_history: list[np.ndarray] = []
         self._approach_last_seen_t: float | None = None
 
@@ -349,8 +345,6 @@ class GateFSM:
 
     # APPROACH (multi-view triangulation)
     def _init_approach(self) -> None:
-        self._approach_batch.clear()
-        self._approach_last_obs_pos = None
         self._approach_pos_history.clear()
         self._approach_last_seen_t = None
 
@@ -384,54 +378,59 @@ class GateFSM:
                 best_dist, best = d, corners
         return best if best_dist <= 120.0 else None
 
-    def _triangulate_and_update(self) -> bool:
-        if len(self._approach_batch) < 2:
-            return False
-        world_corners = []
-        for ci in range(4):
-            pt = triangulate_point_multi(self._approach_batch, ci)
-            if pt is None:
-                return False
-            world_corners.append(pt)
-        world_corners = np.array(world_corners)
+    def _refine_with_reprojection(self, corners_2d: np.ndarray,
+                                  drone_pos: np.ndarray,
+                                  roll: float, pitch: float, yaw: float,
+                                  ) -> bool:
+        """Re-localize the gate from one new viewpoint and blend.
 
-        center, tri_yaw, tri_width = gate_params_from_corners(world_corners)
-        if center[2] < 0.3 or center[2] > 2.5:
-            return False
-        if tri_width < 0.15 or tri_width > 0.7:
-            return False
-        if np.linalg.norm(center[:2] - gate_search_center(self.current_gate)) > 3.0:
-            return False
-        tri_yaw = enforce_correct_yaw_orientation(center[0], center[1], tri_yaw)
+        Single-view reprojection from each new frame, warm-started with
+        the current estimate. As the drone gets closer, the gate fills
+        more pixels → corner localization improves → reprojection gets
+        more accurate. No multi-view triangulation (which was unstable
+        when the drone moves along the gate's normal axis).
 
+        Bad updates are rejected against the YAW_SCAN prior (drift
+        thresholds in config.REFINE_REJECT_*).
+        """
         gate = self.gates[self.current_gate]
         assert gate is not None
+        initial = [
+            float(gate.position[0]), float(gate.position[1]),
+            float(gate.position[2]), float(gate.yaw),
+            float(gate.width),
+        ]
+        params, _cost = localize_gate_reprojection(
+            corners_2d, drone_pos, roll, pitch, yaw,
+            initial_guess=initial,
+        )
+        # Optimizer-output sanity (non-physical results)
+        if params[2] < 0.3 or params[2] > 2.5:
+            return False
+        if params[4] < 0.15 or params[4] > 0.7:
+            return False
+        new_yaw = enforce_correct_yaw_orientation(
+            params[0], params[1], params[3])
 
-        # Sanity reject: when the drone approaches roughly along the gate's
-        # normal, the photo baseline is parallel to the camera rays, depth
-        # is poorly constrained, and the triangulated rectangle ends up
-        # flattened along its depth axis (wrong yaw, compressed sides).
-        # The YAW_SCAN reprojection is a strong prior — refuse updates
-        # that drift too far from it as they're almost certainly bad
-        # triangulation, not real refinement.
-        center_drift = float(np.linalg.norm(center[:2] - gate.position[:2]))
-        yaw_drift = abs(angle_diff(tri_yaw, gate.yaw))
-        width_drift = abs(tri_width - gate.width)
-        if center_drift > config.TRI_REJECT_CENTER_DRIFT:
-            log.debug("Triangulation rejected (Δcenter=%.2fm)", center_drift)
+        new_pos = np.array(params[:3], dtype=np.float64)
+        center_drift = float(np.linalg.norm(new_pos[:2] - gate.position[:2]))
+        yaw_drift = abs(angle_diff(new_yaw, gate.yaw))
+        width_drift = abs(params[4] - gate.width)
+        if center_drift > config.REFINE_REJECT_CENTER_DRIFT:
+            log.debug("Reprojection rejected (Δcenter=%.2fm)", center_drift)
             return False
-        if yaw_drift > config.TRI_REJECT_YAW_DRIFT:
-            log.debug("Triangulation rejected (Δyaw=%.2frad)", yaw_drift)
+        if yaw_drift > config.REFINE_REJECT_YAW_DRIFT:
+            log.debug("Reprojection rejected (Δyaw=%.2frad)", yaw_drift)
             return False
-        if width_drift > config.TRI_REJECT_WIDTH_DRIFT:
-            log.debug("Triangulation rejected (Δwidth=%.2fm)", width_drift)
+        if width_drift > config.REFINE_REJECT_WIDTH_DRIFT:
+            log.debug("Reprojection rejected (Δwidth=%.2fm)", width_drift)
             return False
 
-        a = config.APPROACH_TRI_ALPHA
-        gate.position = (1 - a) * gate.position + a * center
+        a = config.APPROACH_REFINE_ALPHA
+        gate.position = (1 - a) * gate.position + a * new_pos
         gate.yaw = normalize_angle(
-            gate.yaw + a * angle_diff(tri_yaw, gate.yaw))
-        gate.width = (1 - a) * gate.width + a * tri_width
+            gate.yaw + a * angle_diff(new_yaw, gate.yaw))
+        gate.width = (1 - a) * gate.width + a * params[4]
 
         self._approach_pos_history.append(gate.position[:2].copy())
         if len(self._approach_pos_history) > config.CONVERGENCE_WINDOW:
@@ -450,7 +449,7 @@ class GateFSM:
         gate = self.gates[self.current_gate]
         assert gate is not None
 
-        # 1. Detection + triangulation update
+        # 1. Detection + single-view reprojection refinement
         best_corners = None
         if image is not None:
             detections = detect_all_gate_contours(image)
@@ -460,19 +459,9 @@ class GateFSM:
 
         if best_corners is not None and gate_pixel_width(best_corners) >= self.MIN_GATE_PX_WIDTH:
             self._approach_last_seen_t = now
-            spaced = (self._approach_last_obs_pos is None
-                      or np.linalg.norm(drone_pos[:2] - self._approach_last_obs_pos)
-                      >= config.APPROACH_PHOTO_SPACING_M)
-            if spaced:
-                cam_pos = cam_position_world(drone_pos, sd.roll, sd.pitch, sd.yaw)
-                Rc2w = R_cam2world(sd.roll, sd.pitch, sd.yaw)
-                if len(self._approach_batch) >= config.MAX_APPROACH_PHOTOS:
-                    self._approach_batch.pop(0)
-                self._approach_batch.append(
-                    (cam_pos.copy(), Rc2w.copy(), best_corners.copy()))
-                self._approach_last_obs_pos = drone_pos[:2].copy()
-                if len(self._approach_batch) >= 2:
-                    self._triangulate_and_update()
+            self._refine_with_reprojection(
+                best_corners, drone_pos, sd.roll, sd.pitch, sd.yaw,
+            )
         else:
             if (self._approach_last_seen_t is not None
                     and now - self._approach_last_seen_t > config.LOST_GATE_TIMEOUT_S):
