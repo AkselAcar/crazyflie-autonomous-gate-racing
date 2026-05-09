@@ -113,3 +113,16 @@ HLC_TRAVERSE_DURATION: float = 1.2
 # Logging
 LOG_DIR: str = "logs"
 PLOT_DIR: str = "camera_plots"
+
+
+
+
+
+
+# ===================================================
+#                       LAP 2&3
+# ===================================================
+VEL_LIM = 25.0
+ACC_LIM = 250.0
+PTS_PER_METER = 13.0
+TARGET_AVG_SPEED = 1.5
