@@ -112,6 +112,21 @@ REFINE_REJECT_CENTER_DRIFT: float = 0.30   # m  (xy distance from current estima
 REFINE_REJECT_YAW_DRIFT: float = 0.5       # rad (~30°)
 REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
 
+# Visual-servo centering controller (APPROACH state).
+# The controller equalizes left/right and top/bottom gate edge pixel lengths.
+# Errors are normalized by the average of the two edges (dimensionless, ±1 max)
+# so the gains are in metres of target offset per unit relative imbalance.
+#
+# Sign convention (camera x=right, y=down, body y=left, body z=up):
+#   e_h = (l_left − l_right) / avg  > 0 → drone is LEFT  of gate → target moves RIGHT
+#   e_v = (l_top  − l_bottom) / avg > 0 → drone is ABOVE gate    → target moves DOWN
+#
+# Start with small gains and increase until the drone centres reliably
+# without oscillating.  Max correction is clamped to VISUAL_SERVO_MAX_OFFSET.
+VISUAL_SERVO_K_H: float = 0.4        # m per unit relative lateral edge imbalance
+VISUAL_SERVO_K_V: float = 0.4        # m per unit relative vertical edge imbalance
+VISUAL_SERVO_MAX_OFFSET: float = 0.4  # m — hard clamp on each axis
+
 # High-Level Commander durations (seconds). Tune per phase to control speed.
 HLC_TAKEOFF_DURATION: float = 2.0
 HLC_LAND_DURATION: float = 2.5

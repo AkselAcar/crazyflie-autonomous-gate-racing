@@ -447,6 +447,61 @@ class GateFSM:
         std_xy = np.array(self._approach_pos_history).std(axis=0)
         return float(std_xy.max()) < config.CONVERGENCE_STD_THRESHOLD
 
+    def _visual_servo_offset(self, corners: np.ndarray,
+                              drone_yaw: float) -> np.ndarray:
+        """World-frame [dx, dy, dz] that centres the drone on the gate.
+
+        Compares left/right and top/bottom edge pixel lengths and drives
+        them toward equality.  Errors are normalized by the mean edge length
+        so the correction is scale-invariant (same angular offset → same
+        correction regardless of distance to gate).
+
+        Body frame: x=forward, y=left, z=up.
+        Camera frame: x=right (image), y=down (image), z=forward.
+          body_y = −cam_x  →  world left  = image left
+          body_z = −cam_y  →  world up    = image up (small v)
+
+        Sign derivation:
+          e_h > 0  (l_left > l_right): gate's near side is image-left
+                   → drone is LEFT of gate axis → target must move RIGHT
+                   → delta_body_y < 0  (body_y = left, so negative = right)
+          e_v > 0  (l_top > l_bottom): gate's near side is image-top
+                   → drone is ABOVE gate centre → target must move DOWN
+                   → delta_body_z < 0
+        """
+        tl, tr, br, bl = corners  # TL TR BR BL — image space, shape (2,) each
+
+        l_left  = float(np.linalg.norm(bl - tl))
+        l_right = float(np.linalg.norm(br - tr))
+        l_top   = float(np.linalg.norm(tr - tl))
+        l_bottom = float(np.linalg.norm(br - bl))
+
+        avg_h = (l_left + l_right) * 0.5 + 1e-6
+        avg_v = (l_top + l_bottom) * 0.5 + 1e-6
+
+        e_h = (l_left - l_right) / avg_h   # dimensionless ∈ (−1, 1)
+        e_v = (l_top  - l_bottom) / avg_v
+
+        log.debug("VisServo e_h=%.3f e_v=%.3f (l_l=%.1f l_r=%.1f l_t=%.1f l_b=%.1f)",
+                  e_h, e_v, l_left, l_right, l_top, l_bottom)
+
+        # Body-frame lateral and vertical corrections
+        delta_y = -config.VISUAL_SERVO_K_H * e_h   # body_y (left)
+        delta_z = -config.VISUAL_SERVO_K_V * e_v   # body_z (up)
+
+        # Clamp each axis
+        clamp = config.VISUAL_SERVO_MAX_OFFSET
+        delta_y = max(-clamp, min(clamp, delta_y))
+        delta_z = max(-clamp, min(clamp, delta_z))
+
+        # Rotate body lateral → world (ignore forward component)
+        cy, sy = cos(drone_yaw), sin(drone_yaw)
+        dx = -sy * delta_y
+        dy =  cy * delta_y
+        dz =  delta_z
+
+        return np.array([dx, dy, dz])
+
     def _do_approach(self, sd: DroneState, image: np.ndarray | None,
                      drone_pos: np.ndarray) -> None:
         now = sd.t
@@ -480,11 +535,18 @@ class GateFSM:
         look_yaw = atan2(gate.position[1] - drone_pos[1],
                          gate.position[0] - drone_pos[0])
 
-        # 3. Issue go_to (rate-limited internally)
-        self._issue_goto(align_pose[0], align_pose[1], align_pose[2],
+        # 3. Visual-servo correction: nudge target so left=right and top=bottom
+        servo = np.zeros(3)
+        if best_corners is not None and gate_pixel_width(best_corners) >= self.MIN_GATE_PX_WIDTH:
+            servo = self._visual_servo_offset(best_corners, sd.yaw)
+
+        # 4. Issue go_to with servo-corrected target (rate-limited internally)
+        self._issue_goto(align_pose[0] + servo[0],
+                         align_pose[1] + servo[1],
+                         align_pose[2] + servo[2],
                          look_yaw, cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-        # 4. Transition when arrived OR converged
+        # 5. Transition when arrived OR converged
         at_align = self._at_target(sd,
                                    target_xy=align_pose[:2],
                                    target_z=align_pose[2],
