@@ -52,6 +52,15 @@ EXPLORE_ALT: float = 1.0
 GATE_OPENING_HEIGHT: float = 0.4
 GATE_WIDTH_BOUNDS: tuple[float, float] = (0.3, 0.5)
 
+# Empirical Z bias correction applied to every reprojection-based gate
+# estimate (both YAW_SCAN initial estimate and APPROACH refinements).
+# We consistently observe the optimizer underestimates the gate's height
+# by ~0.2 m — likely because the LED frame is taller than the opening,
+# because the AI Deck is tilted a few degrees, or because the nominal
+# camera FOV is off. Tune this value by comparing detected vs measured
+# gate heights and set to 0.0 once the underlying intrinsic is fixed.
+GATE_Z_BIAS_CORRECTION: float = 0.20  # m, added to every detected gate.z
+
 # AI Deck camera (HM01B0, no calibration — nominal values)
 # Resolution and FOV come from the AI Deck 1.1 datasheet. Refine after a
 # first calibration pass on a known target.
@@ -86,8 +95,8 @@ DET_MIN_AREA: int = 200                   # px², discards tiny reflections
 DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 
 # Approach + reprojection-refinement tuning
-APPROACH_DIST: float = 0.6                # m, smaller arena → closer approach
-TRAVERSE_OVERSHOOT: float = 0.05          # m past the gate plane
+APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
+TRAVERSE_OVERSHOOT: float = 0.15          # m past the gate plane
 TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
 APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8

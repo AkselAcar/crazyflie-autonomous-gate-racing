@@ -339,11 +339,13 @@ class GateFSM:
                 continue
             params[3] = enforce_correct_yaw_orientation(
                 params[0], params[1], params[3])
+            # Empirical z bias correction (see config.GATE_Z_BIAS_CORRECTION).
+            params[2] += config.GATE_Z_BIAS_CORRECTION
             if cost < self._scan_best_cost:
                 self._scan_best_cost = cost
                 self._scan_best_detection = params
 
-    # APPROACH (multi-view triangulation)
+    # APPROACH (single-view reprojection refinement)
     def _init_approach(self) -> None:
         self._approach_pos_history.clear()
         self._approach_last_seen_t = None
@@ -412,6 +414,8 @@ class GateFSM:
         new_yaw = enforce_correct_yaw_orientation(
             params[0], params[1], params[3])
 
+        # Empirical z bias correction (see config.GATE_Z_BIAS_CORRECTION).
+        params[2] += config.GATE_Z_BIAS_CORRECTION
         new_pos = np.array(params[:3], dtype=np.float64)
         center_drift = float(np.linalg.norm(new_pos[:2] - gate.position[:2]))
         yaw_drift = abs(angle_diff(new_yaw, gate.yaw))
