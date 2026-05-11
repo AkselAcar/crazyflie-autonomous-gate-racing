@@ -1,1 +1,2 @@
 cfclient
+opencv-python
