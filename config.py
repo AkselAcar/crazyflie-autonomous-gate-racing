@@ -49,17 +49,14 @@ EXPLORE_ALT: float = 1.0
 
 # Gate physical properties — variable, same as Webots assignment.
 # Width is unknown a priori and stays a free parameter in reprojection.
+# Height is FIXED in the reprojection model, which means any camera tilt
+# or LED-frame-vs-opening mismatch shows up as a biased gate.z estimate
+# (not in xy, since W is free and absorbs horizontal mismatches). We
+# therefore never use the reprojected gate.z as a control target — we
+# use the drone's current z plus the visual servo's vertical correction
+# instead. See fsm.py _do_approach / _do_align_traverse.
 GATE_OPENING_HEIGHT: float = 0.4
 GATE_WIDTH_BOUNDS: tuple[float, float] = (0.3, 0.5)
-
-# Empirical Z bias correction applied to every reprojection-based gate
-# estimate (both YAW_SCAN initial estimate and APPROACH refinements).
-# We consistently observe the optimizer underestimates the gate's height
-# by ~0.2 m — likely because the LED frame is taller than the opening,
-# because the AI Deck is tilted a few degrees, or because the nominal
-# camera FOV is off. Tune this value by comparing detected vs measured
-# gate heights and set to 0.0 once the underlying intrinsic is fixed.
-GATE_Z_BIAS_CORRECTION: float = 0.20  # m, added to every detected gate.z
 
 # AI Deck camera (HM01B0, no calibration — nominal values)
 # Resolution and FOV come from the AI Deck 1.1 datasheet. Refine after a
