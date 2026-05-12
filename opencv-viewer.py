@@ -141,13 +141,11 @@ try:
                 soi = imgStream.find(b'\xff\xd8')
                 eoi = imgStream.rfind(b'\xff\xd9')
                 if soi >= 0 and eoi > soi and (eoi + 2 - soi) >= MIN_JPEG_BYTES:
-                    with open("img.jpeg", "wb") as f:
-                        f.write(imgStream[soi:eoi + 2])
                     nparr = np.frombuffer(imgStream, np.uint8, count=eoi + 2 - soi, offset=soi)
                     decoded = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
                     if args.save and decoded is not None:
                         cv2.imwrite(f"{path_raw}/img_{count:06d}.png", decoded)
-                    #cv2.imshow('JPEG', decoded)
+                    cv2.imshow('JPEG', decoded)
                 cv2.waitKey(1)
 
 except KeyboardInterrupt:
