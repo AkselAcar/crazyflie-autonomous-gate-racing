@@ -121,7 +121,14 @@ REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
 # Start with small gains and increase until the drone centres reliably
 # without oscillating.  Max correction is clamped to VISUAL_SERVO_MAX_OFFSET.
 VISUAL_SERVO_K_H: float = 0.4        # m per unit relative lateral edge imbalance
-VISUAL_SERVO_K_V: float = 0.4        # m per unit relative vertical edge imbalance
+# K_V is now a dimensionless feedback gain on the metric vertical error:
+#   Δz = −K_V × (pixel_err / FOCAL_PX) × dist_to_gate   [metres]
+# Unlike the old edge-asymmetry gain this is pitch-compensated and
+# distance-aware. Start at 1.0 and tune up if the drone under-corrects.
+VISUAL_SERVO_K_V: float = 1.0
+# Fallback gain (edge asymmetry) used only when the gate is very close
+# (p_cam[2] < 0.1 m) — same unit as the old K_V (m / dimensionless).
+VISUAL_SERVO_K_V_FALLBACK: float = 0.5
 VISUAL_SERVO_MAX_OFFSET: float = 0.4  # m — hard clamp on each axis
 
 # High-Level Commander durations (seconds). Tune per phase to control speed.
