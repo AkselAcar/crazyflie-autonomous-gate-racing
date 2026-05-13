@@ -150,6 +150,9 @@ PLOT_DIR: str = "camera_plots"
 # ===================================================
 #                       LAP 2&3
 # ===================================================
+GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_generated.csv"
+MOTION_PLANNER_VERBOSE = False
+
 VEL_LIM = 25.0
 ACC_LIM = 250.0 
 PTS_PER_METER = 30.0                # Number of points per meter for trajectory
@@ -158,5 +161,8 @@ TARGET_AVG_SPEED = 1.5              # Target averaged speed over trajectory [m/s
 
 APPROACH_DIST = 0.15                # Distance of points before and after the gate [m]
 
-STARTING_POINT = (0.7, 0.0, 0.75)   # Starting point (x, y, z)
+STARTING_POINT = TAKE_OFF_POS # (0.7, 0.0, 0.75)   # Starting point (x, y, z)
 FINISH_POINT_DIST = 0.5             # Finish point distance from last gate [m]
+
+BASE_LOOKAHEAD = 1.0                   # Base lookahead distance for Pure Pursuit [m]
+LOOKAHEAD_SPEED_MULTIPLIER = 1.5       # Multiplier for dynamic lookahead based on speed [m/s]

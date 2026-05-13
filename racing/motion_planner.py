@@ -14,8 +14,9 @@ import config
 class MotionPlanner3D():
     
     # def __init__(self, start, obstacles, bounds, grid_size, goal, gate_widths):
-    def __init__(self, gate_pos_csv_path="./gate_pos_csv/gates_info.csv", verbose=False):
+    def __init__(self, start_pos=config.STARTING_POINT, gate_pos_csv_path="./gate_pos_csv/gates_info.csv", verbose=False):
 
+        self.starting_point = start_pos
         self.trajectory_setpoints = None
         self.path_waypoints, self.gate_pos, self.gate_orientations, self.gate_widths, self.gate_heights = self.construct_waypoints(gate_pos_csv_path, verbose=verbose)
         print(f"[INFO] Successfully loaded and constructed {len(self.path_waypoints)} gate waypoints from {gate_pos_csv_path}.")
@@ -61,7 +62,7 @@ class MotionPlanner3D():
             print(f"Loaded gate widths (shape {gate_widths.shape}):\n{gate_widths}")
             print(f"Loaded gate heights (shape {gate_heights.shape}):\n{gate_heights}")
 
-        waypoints = [config.STARTING_POINT] # Starting point (x, y, z)
+        waypoints = [self.starting_point] # Starting point (x, y, z)
         
         num_gates = gate_pos.shape[1]
         for index in range(num_gates*2):
