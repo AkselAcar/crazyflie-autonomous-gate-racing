@@ -1,23 +1,24 @@
 import sys
 from pathlib import Path
 
-# Ensure root directory is in path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+from generate_gate_csv import plot_gates
 import config
 
 
 class MotionPlanner3D():
     
     # def __init__(self, start, obstacles, bounds, grid_size, goal, gate_widths):
-    def __init__(self, gate_pos_csv_path="./gate_pos_csv/gates_info.csv"):
+    def __init__(self, gate_pos_csv_path="./gate_pos_csv/gates_info.csv", verbose=False):
 
         self.trajectory_setpoints = None
-        self.path_waypoints, self.gate_pos, self.gate_orientations, self.gate_widths, self.gate_heights = self.construct_waypoints(gate_pos_csv_path)
-        print(f"Successfully loaded and constructed {len(self.path_waypoints)} gate waypoints from {gate_pos_csv_path}.")
+        self.path_waypoints, self.gate_pos, self.gate_orientations, self.gate_widths, self.gate_heights = self.construct_waypoints(gate_pos_csv_path, verbose=verbose)
+        print(f"[INFO] Successfully loaded and constructed {len(self.path_waypoints)} gate waypoints from {gate_pos_csv_path}.")
 
         self.vel_lim = config.VEL_LIM                   # Velocity limit of the drone (m/s)
         self.acc_lim = config.ACC_LIM                   # Acceleration limit of the drone (m/s²)
@@ -29,9 +30,10 @@ class MotionPlanner3D():
 
         target_avg_speed = config.TARGET_AVG_SPEED
         t_f = total_dist / target_avg_speed
-        t_f = max(t_f, 20.0)
-        print(f"Target average speed: {target_avg_speed}, t_f = {t_f}")
-        
+        t_f = max(t_f, config.MIN_T_F)
+        print(f"[INFO] Target average speed: {target_avg_speed} m/s")
+        print(f"[INFO] Total time expected: {t_f:.1f} s")
+
         # Allocate time proportionally
         self.times = [0.0]
         current_time = 0.0
@@ -44,25 +46,31 @@ class MotionPlanner3D():
 
         self.run_planner()
 
-    def construct_waypoints(self, gate_pos_csv_path):
+    def construct_waypoints(self, gate_pos_csv_path, verbose=False):
         offset_dist = config.APPROACH_DIST
 
         gate_pos_df = pd.read_csv(gate_pos_csv_path)
         gate_pos = gate_pos_df[["x", "y", "z"]].values.T
-        gate_orientations = gate_pos_df["theta"].values
+        gate_orientations = gate_pos_df["theta"].values - np.pi/2
         gate_widths = gate_pos_df["width"].values
         gate_heights = gate_pos_df["height"].values
 
-        waypoints = [(1.5, 0.0, 0.75)] # TODO: Change!! Starting point (x, y, z)
+        if verbose:
+            print(f"Loaded gate positions (shape {gate_pos.shape}):\n{gate_pos}")
+            print(f"Loaded gate orientations (shape {gate_orientations.shape}):\n{gate_orientations}")
+            print(f"Loaded gate widths (shape {gate_widths.shape}):\n{gate_widths}")
+            print(f"Loaded gate heights (shape {gate_heights.shape}):\n{gate_heights}")
+
+        waypoints = [config.STARTING_POINT] # Starting point (x, y, z)
         
         num_gates = gate_pos.shape[1]
-        for index in range(num_gates+1):
+        for index in range(num_gates*2):
             i = index % num_gates
 
             yaw = gate_orientations[i]
             p_center = gate_pos[:, i].flatten()
             
-            # Based on your holonomic controller, the normal vector points opposite to the approach
+            # Approach direction from the gate orientation
             dx = offset_dist * np.cos(yaw)
             dy = offset_dist * np.sin(yaw)
 
@@ -75,11 +83,17 @@ class MotionPlanner3D():
             # Center Point
             waypoints.append(tuple(p_center))
             
-            # Exit Point
+            # Exit Point (exit opposite to approach)
             p_exit = p_center.copy()
             p_exit[0] += dx
             p_exit[1] += dy
             waypoints.append(tuple(p_exit))
+
+            if index == num_gates*2 - 1:
+                p_final = p_exit.copy()
+                p_final[0] = p_exit[0] + config.FINISH_POINT_DIST * np.cos(yaw)
+                p_final[1] = p_exit[1] + config.FINISH_POINT_DIST * np.sin(yaw)
+                waypoints.append(tuple(p_final))
             
         return np.array(waypoints), gate_pos, gate_orientations, gate_widths, gate_heights
 
@@ -260,7 +274,9 @@ class MotionPlanner3D():
         ax = fig.add_subplot(111, projection='3d')
         
         # Plot trajectory setpoints
-        ax.scatter(self.path_waypoints[:,0], self.path_waypoints[:,1], self.path_waypoints[:,2], c='g', marker='x', s=100, label='Waypoints')
+        ax.scatter(self.path_waypoints[0,0], self.path_waypoints[0,1], self.path_waypoints[0,2], c='b', marker='o', s=100, label='Starting Point')
+        ax.scatter(self.path_waypoints[-1,0], self.path_waypoints[-1,1], self.path_waypoints[-1,2], c='r', marker='o', s=100, label='Finishing Point')
+        ax.scatter(self.path_waypoints[1:-2,0], self.path_waypoints[1:-2,1], self.path_waypoints[1:-2,2], c='g', marker='x', s=50, label='Waypoints')
         ax.plot(self.trajectory_setpoints[:,0], self.trajectory_setpoints[:,1], self.trajectory_setpoints[:,2], c='b', label='Trajectory')
         
         # Plot gates as vertical rectangles
@@ -296,8 +312,15 @@ class MotionPlanner3D():
         ax.set_xlabel('X (m)')
         ax.set_ylabel('Y (m)')
         ax.set_zlabel('Z (m)')
+        ax.set_xbound(-2, 2)
+        ax.set_ybound(-2, 2)
+        ax.set_zbound(0, 2)
         ax.legend()
         plt.show()
 
-test = MotionPlanner3D(gate_pos_csv_path="./gate_pos_csv/gates_info_example.csv")
-test.plot()
+if __name__ == "__main__":
+    csv_file_path = "racing/gate_pos_csv/gates_info_generated.csv"
+    test = MotionPlanner3D(gate_pos_csv_path=csv_file_path, verbose=False)
+    gates_df = pd.read_csv(csv_file_path)
+    plot_gates(gates_df, show_plot=True)
+    test.plot()
