@@ -69,94 +69,87 @@ if args.save:
     
     print(f"Les images seront sauvegardées dans : stream_out/{timestamp}/")
 
-print("Connecting to socket on {}:{}...".format(args.n, args.p))
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((args.n, args.p)) # opens a connection on which the drone will send data (pictures here)
-print("Socket connected")
+LOCAL_PORT  = 5001
+START_MAGIC = b'FER'
+CPX_HEADER_SIZE  = 4
+IMG_HEADER_MAGIC = 0xBC
+IMG_HEADER_SIZE  = 11
+IMG_WIDTH        = 324
+IMG_HEIGHT       = 244
+MIN_JPEG_BYTES   = 5000
 
-def rx_bytes(size):
-    """
-    Reads exactly 'size' bytes from the socket. The 'while' is needed because 'recv' does not
-    guarantee to return the number of bytes asked in one time.
-    """
-    data = bytearray()
-    while len(data) < size:
-        chunk = client_socket.recv(size - len(data))
-        if not chunk:
-            raise ConnectionError("Socket closed by remote")
-        data.extend(chunk)
-    return data
+print("Opening UDP socket, waiting for AI-deck {}:{}...".format(args.n, args.p))
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+client_socket.bind(('0.0.0.0', LOCAL_PORT))
+client_socket.sendto(START_MAGIC, (args.n, args.p))
+print("UDP socket ready, stream started")
 
 start = time.time()
 count = 0
+imgStream = bytearray()
+expected_size = 0
+receiving = False
+img_format = 0
 
 try:
     while True:
-        # First get the info
-        packetInfoRaw = rx_bytes(4) # this packet gives info on the packet of imgHeader, that gives info on the image
-        #print(packetInfoRaw)
-        # each message begins by 'length' (2 bytes) = size of the rest of the packet
-        # then 'routing' (1 byte) gives source and destination
-        # then 'function' (1 byte) gives the function type
-        [length, routing, function] = struct.unpack('<HBB', packetInfoRaw)
-        #print("Length is {}".format(length))
-        #print("Route is 0x{:02X}->0x{:02X}".format(routing & 0xF, routing >> 4))
-        #print("Function is 0x{:02X}".format(function))
+        data, _ = client_socket.recvfrom(2048)
+        if len(data) < CPX_HEADER_SIZE:
+            continue
+        payload = data[CPX_HEADER_SIZE:]
 
-        imgHeader = rx_bytes(length - 2) # minus 2 because 'dst' and 'src' are counted in 'length' but already read
-        #print(imgHeader)
-        #print("Length of data is {}".format(len(imgHeader)))
-        [magic, width, height, depth, format, size] = struct.unpack('<BHHBBI', imgHeader)
-        # 'magic' is a magic byte saying that the packet is a bitcraze image
-        # 'depth' = nbr of bytes per pixel
-        # 'format' = 0 if RAW Bayer, other if JPEG
-        # 'size' = image size in bytes
-        if magic == 0xBC:
-            #print("Magic is good")
-            #print("Resolution is {}x{} with depth of {} byte(s)".format(width, height, depth))
-            #print("Image format is {}".format(format))
-            #print("Image size is {} bytes".format(size))
+        # Image header → start of new frame
+        if len(payload) >= IMG_HEADER_SIZE and payload[0] == IMG_HEADER_MAGIC:
+            [magic, width, height, depth, fmt, size] = struct.unpack('<BHHBBI', payload[:IMG_HEADER_SIZE])
+            # 'magic' is a magic byte saying that the packet is a bitcraze image
+            # 'depth' = nbr of bytes per pixel
+            # 'format' = 0 if RAW Bayer, other if JPEG
+            # 'size' = image size in bytes
+            if width == IMG_WIDTH and height == IMG_HEIGHT and 0 < size < 65536:
+                expected_size = size
+                imgStream = bytearray()
+                receiving = True
+                img_format = fmt
+            continue
 
-            # Now we start rx the image, this will be split up in packages of some size
-            imgStream = bytearray()
-            while len(imgStream) < size: # we get back the image in several packets
-                packetInfoRaw = rx_bytes(4) # this packet is a part of the image
-                [length, dst, src] = struct.unpack('<HBB', packetInfoRaw)
-                # 'length' (2 bytes) = size of this chunk
-                # 'dst' (1 byte) = destination
-                # 'src' (1 byte) = source
-                #print("Chunk size is {} ({:02X}->{:02X})".format(length, src, dst))
-                imgStream.extend(rx_bytes(length - 2)) # minus 2 because 'dst' and 'src' are counted in 'length' but already read
+        if not receiving:
+            continue
 
+        imgStream.extend(payload)
+
+        if len(imgStream) >= expected_size:
+            receiving = False
             count += 1
             meanTimePerImage = (time.time() - start) / count
             print(f"Mean: {meanTimePerImage:.4f}s | FPS: {1/meanTimePerImage:.2f}")
-            
+
             """
             BAYER = Raw, best quality, no computation onboard, heavier to send
             JPEG  = already compressed onboard (so more computation for drone), lower quality, 5-20x lighter (easier to send)
             """
-            if format == 0:
-                bayer_img = np.frombuffer(imgStream, dtype=np.uint8).reshape((244, 324)) # np.frombuffer is flattened, we reshape in 2D
+            if img_format == 0:
+                bayer_img = np.frombuffer(imgStream, dtype=np.uint8).reshape((IMG_HEIGHT, IMG_WIDTH))
                 color_img = cv2.cvtColor(bayer_img, cv2.COLOR_BayerBG2BGRA)
                 cv2.imshow('Raw', bayer_img)
                 cv2.imshow('Color', color_img)
                 if args.save:
-                        cv2.imwrite(f"{path_raw}/img_{count:06d}.png", bayer_img)
-                        cv2.imwrite(f"{path_color}/img_{count:06d}.png", color_img)
+                    cv2.imwrite(f"{path_raw}/img_{count:06d}.png", bayer_img)
+                    cv2.imwrite(f"{path_color}/img_{count:06d}.png", color_img)
                 cv2.waitKey(1)
             else:
-                with open("img.jpeg", "wb") as f:
-                    f.write(imgStream)
-                nparr = np.frombuffer(imgStream, np.uint8)
-                decoded = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-                #cv2.imshow('JPEG', decoded)
+                soi = imgStream.find(b'\xff\xd8')
+                eoi = imgStream.rfind(b'\xff\xd9')
+                if soi >= 0 and eoi > soi and (eoi + 2 - soi) >= MIN_JPEG_BYTES:
+                    nparr = np.frombuffer(imgStream, np.uint8, count=eoi + 2 - soi, offset=soi)
+                    decoded = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+                    if args.save and decoded is not None:
+                        cv2.imwrite(f"{path_raw}/img_{count:06d}.png", decoded)
+                    cv2.imshow('JPEG', decoded)
                 cv2.waitKey(1)
 
 except KeyboardInterrupt:
     print("Stopped by user")
-except ConnectionError as e:
-    print(f"Connection error: {e}")
 finally:
     client_socket.close()
     cv2.destroyAllWindows()

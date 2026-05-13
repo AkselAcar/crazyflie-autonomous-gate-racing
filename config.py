@@ -49,6 +49,12 @@ EXPLORE_ALT: float = 1.0
 
 # Gate physical properties — variable, same as Webots assignment.
 # Width is unknown a priori and stays a free parameter in reprojection.
+# Height is FIXED in the reprojection model, which means any camera tilt
+# or LED-frame-vs-opening mismatch shows up as a biased gate.z estimate
+# (not in xy, since W is free and absorbs horizontal mismatches). We
+# therefore never use the reprojected gate.z as a control target — we
+# use the drone's current z plus the visual servo's vertical correction
+# instead. See fsm.py _do_approach / _do_align_traverse.
 GATE_OPENING_HEIGHT: float = 0.4
 GATE_WIDTH_BOUNDS: tuple[float, float] = (0.3, 0.5)
 
@@ -86,8 +92,8 @@ DET_MIN_AREA: int = 200                   # px², discards tiny reflections
 DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 
 # Approach + reprojection-refinement tuning
-APPROACH_DIST: float = 0.6                # m, smaller arena → closer approach
-TRAVERSE_OVERSHOOT: float = 0.05          # m past the gate plane
+APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
+TRAVERSE_OVERSHOOT: float = 0.15          # m past the gate plane
 TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
 APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8
@@ -102,6 +108,28 @@ LOST_GATE_TIMEOUT_S: float = 3.0
 REFINE_REJECT_CENTER_DRIFT: float = 0.30   # m  (xy distance from current estimate)
 REFINE_REJECT_YAW_DRIFT: float = 0.5       # rad (~30°)
 REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
+
+# Visual-servo centering controller (APPROACH state).
+# The controller equalizes left/right and top/bottom gate edge pixel lengths.
+# Errors are normalized by the average of the two edges (dimensionless, ±1 max)
+# so the gains are in metres of target offset per unit relative imbalance.
+#
+# Sign convention (camera x=right, y=down, body y=left, body z=up):
+#   e_h = (l_left − l_right) / avg  > 0 → drone is LEFT  of gate → target moves RIGHT
+#   e_v = (l_top  − l_bottom) / avg > 0 → drone is ABOVE gate    → target moves DOWN
+#
+# Start with small gains and increase until the drone centres reliably
+# without oscillating.  Max correction is clamped to VISUAL_SERVO_MAX_OFFSET.
+VISUAL_SERVO_K_H: float = 0.4        # m per unit relative lateral edge imbalance
+# K_V is now a dimensionless feedback gain on the metric vertical error:
+#   Δz = −K_V × (pixel_err / FOCAL_PX) × dist_to_gate   [metres]
+# Unlike the old edge-asymmetry gain this is pitch-compensated and
+# distance-aware. Start at 1.0 and tune up if the drone under-corrects.
+VISUAL_SERVO_K_V: float = 1.0
+# Fallback gain (edge asymmetry) used only when the gate is very close
+# (p_cam[2] < 0.1 m) — same unit as the old K_V (m / dimensionless).
+VISUAL_SERVO_K_V_FALLBACK: float = 0.5
+VISUAL_SERVO_MAX_OFFSET: float = 0.4  # m — hard clamp on each axis
 
 # High-Level Commander durations (seconds). Tune per phase to control speed.
 HLC_TAKEOFF_DURATION: float = 2.0

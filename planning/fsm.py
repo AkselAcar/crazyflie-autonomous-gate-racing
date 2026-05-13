@@ -123,6 +123,10 @@ class GateFSM:
         # the gate normal: parallel rays → poor depth estimate).
         self._approach_pos_history: list[np.ndarray] = []
         self._approach_last_seen_t: float | None = None
+        # Persistent z setpoint accumulates servo corrections without
+        # re-anchoring to drone_pos[2] each tick (prevents early z commit).
+        self._servo_z_setpoint: float | None = None
+        self._servo_z_settled: int = 0  # consecutive frames with small z error
 
         # Traverse state
         self._traverse_target: np.ndarray | None = None
@@ -153,7 +157,7 @@ class GateFSM:
         elif self.state == self.APPROACH:
             self._do_approach(sd, image, drone_pos)
         elif self.state == self.ALIGN_AND_TRAVERSE:
-            self._do_align_traverse(sd, drone_pos)
+            self._do_align_traverse(sd, image, drone_pos)
         elif self.state == self.FALLBACK_SCAN:
             self._do_fallback_scan(sd, image, drone_pos)
         elif self.state == self.LAND:
@@ -335,7 +339,7 @@ class GateFSM:
                 continue
             est_pos = (float(params[0]), float(params[1]))
             dist_to_region = cv2.pointPolygonTest(search_poly, est_pos, True)
-            if dist_to_region < -1.0:
+            if dist_to_region < -0.2:
                 continue
             params[3] = enforce_correct_yaw_orientation(
                 params[0], params[1], params[3])
@@ -343,10 +347,17 @@ class GateFSM:
                 self._scan_best_cost = cost
                 self._scan_best_detection = params
 
-    # APPROACH (multi-view triangulation)
+    # APPROACH (single-view reprojection refinement)
     def _init_approach(self) -> None:
         self._approach_pos_history.clear()
         self._approach_last_seen_t = None
+        # Seed the z setpoint from the reprojection estimate so the drone
+        # immediately heads to approximately the right altitude, rather than
+        # waiting for the edge-asymmetry servo to slowly accumulate a
+        # correction from a near-zero signal at long range.
+        gate = self.gates[self.current_gate]
+        self._servo_z_setpoint = float(gate.position[2]) if gate is not None else None
+        self._servo_z_settled = 0
 
     def _approach_align_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """Approach target = APPROACH_DIST in front of the gate, looking at it."""
@@ -443,6 +454,77 @@ class GateFSM:
         std_xy = np.array(self._approach_pos_history).std(axis=0)
         return float(std_xy.max()) < config.CONVERGENCE_STD_THRESHOLD
 
+    def _visual_servo_offset(self, corners: np.ndarray,
+                              drone_pos: np.ndarray,
+                              roll: float, pitch: float, yaw: float,
+                              gate_pos: np.ndarray) -> np.ndarray:
+        """World-frame [dx, dy, dz] that centres the drone on the gate.
+
+        Horizontal (y): edge-length asymmetry — scale-invariant, pitch has
+        negligible effect on left/right symmetry.
+
+        Vertical (z): pitch-compensated centroid error scaled by distance.
+          We project the current gate estimate into the image using the full
+          drone attitude (R_cam2world), compare to the actual detected
+          centroid, and convert the pixel error to metres:
+            Δz = −(v_c − exp_v) / FOCAL_PX × dist
+          This is correct at all distances and is immune to forward-pitch
+          cancellation that made the edge-asymmetry servo ineffective far
+          from the gate.
+
+        VISUAL_SERVO_K_V is now a dimensionless feedback gain (~1.0).
+        """
+        tl, tr, br, bl = corners  # TL TR BR BL — image space, shape (2,) each
+
+        # Horizontal: edge-length asymmetry (unchanged)
+        l_left  = float(np.linalg.norm(bl - tl))
+        l_right = float(np.linalg.norm(br - tr))
+        avg_h = (l_left + l_right) * 0.5 + 1e-6
+        e_h = (l_left - l_right) / avg_h   # dimensionless ∈ (−1, 1)
+        delta_y = -config.VISUAL_SERVO_K_H * e_h
+
+        # Vertical: centroid error relative to image centre, scaled by distance.
+        # At distance D, a centroid offset of (v_c − CY) pixels corresponds to
+        # a real-world vertical error of (v_c − CY)/FOCAL_PX × D metres.
+        # Targeting CY means "fly at the altitude where the gate centre appears
+        # in the middle of the image".  This signal is proportional to angular
+        # offset (not to perspective foreshortening) so it works at any range.
+        # We use the full camera-to-world rotation to get distance D correctly.
+        Rc2w = R_cam2world(roll, pitch, yaw)
+        cam_pos_w = cam_position_world(drone_pos, roll, pitch, yaw)
+        p_cam = Rc2w.T @ (gate_pos - cam_pos_w)
+
+        if p_cam[2] > 0.1:
+            v_c = float(np.mean(corners[:, 1]))
+            # v_c > CY: gate below image centre → drone above gate → move down
+            # v_c < CY: gate above image centre → drone below gate → move up
+            pixel_err = v_c - config.CAM_CY
+            dist = float(p_cam[2])
+            delta_z = -config.VISUAL_SERVO_K_V * (pixel_err / config.FOCAL_PX) * dist
+            log.debug("VisServo e_h=%.3f pixel_err=%.1fpx v_c=%.1f dist=%.2fm dz=%.3fm",
+                      e_h, pixel_err, v_c, dist, delta_z)
+        else:
+            # Fallback: edge-length asymmetry (gate very close or behind)
+            l_top    = float(np.linalg.norm(tr - tl))
+            l_bottom = float(np.linalg.norm(br - bl))
+            avg_v = (l_top + l_bottom) * 0.5 + 1e-6
+            e_v = (l_top - l_bottom) / avg_v
+            delta_z = -config.VISUAL_SERVO_K_V_FALLBACK * e_v
+            log.debug("VisServo fallback e_h=%.3f e_v=%.3f dz=%.3fm", e_h, e_v, delta_z)
+
+        # Clamp each axis
+        clamp = config.VISUAL_SERVO_MAX_OFFSET
+        delta_y = max(-clamp, min(clamp, delta_y))
+        delta_z = max(-clamp, min(clamp, delta_z))
+
+        # Rotate body lateral → world (ignore forward component)
+        cy, sy = cos(yaw), sin(yaw)
+        dx = -sy * delta_y
+        dy =  cy * delta_y
+        dz =  delta_z
+
+        return np.array([dx, dy, dz])
+
     def _do_approach(self, sd: DroneState, image: np.ndarray | None,
                      drone_pos: np.ndarray) -> None:
         now = sd.t
@@ -471,19 +553,45 @@ class GateFSM:
                 self._set_state(self.FALLBACK_SCAN)
                 return
 
-        # 2. Compute moving target = align-in-front-of-gate, look at gate
+        # 2. Compute moving target = align-in-front-of-gate, look at gate.
+        # xy comes from reprojection (accurate). z comes from the drone's
+        # current z plus the visual servo's vertical correction — we never
+        # trust the reprojected gate.z because it's biased by camera tilt.
         align_pose, _ = self._approach_align_pose()
         look_yaw = atan2(gate.position[1] - drone_pos[1],
                          gate.position[0] - drone_pos[0])
 
-        # 3. Issue go_to (rate-limited internally)
-        self._issue_goto(align_pose[0], align_pose[1], align_pose[2],
+        # 3. Visual-servo correction: nudge target so left=right and top=bottom
+        servo = np.zeros(3)
+        if best_corners is not None and gate_pixel_width(best_corners) >= self.MIN_GATE_PX_WIDTH:
+            servo = self._visual_servo_offset(best_corners, drone_pos,
+                                              sd.roll, sd.pitch, sd.yaw,
+                                              gate.position)
+            # Accumulate z correction into a persistent setpoint so it doesn't
+            # re-anchor to drone_pos[2] each tick (which prevents convergence).
+            desired_z = drone_pos[2] + servo[2]
+            if self._servo_z_setpoint is None:
+                self._servo_z_setpoint = desired_z
+            else:
+                self._servo_z_setpoint = (0.55 * self._servo_z_setpoint
+                                          + 0.45 * desired_z)
+            self._servo_z_setpoint = float(np.clip(
+                self._servo_z_setpoint, config.Z_BOUNDS[0], config.Z_BOUNDS[1]))
+
+        # 4. Issue go_to with servo-corrected target (rate-limited internally).
+        # xy from reprojection; z from the persistent servo setpoint (immune to
+        # reprojection's z bias and to re-anchoring on every tick).
+        target_x = align_pose[0] + servo[0]
+        target_y = align_pose[1] + servo[1]
+        target_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
+                    else drone_pos[2])
+        self._issue_goto(target_x, target_y, target_z,
                          look_yaw, cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-        # 4. Transition when arrived OR converged
+        # 5. Transition when arrived OR converged
         at_align = self._at_target(sd,
                                    target_xy=align_pose[:2],
-                                   target_z=align_pose[2],
+                                   target_z=target_z,
                                    pos_tol=0.15)
         if at_align or self._approach_is_converged():
             log.info("Gate %d converged at %s yaw=%.2f -> TRAVERSE",
@@ -494,26 +602,72 @@ class GateFSM:
             self._set_state(self.ALIGN_AND_TRAVERSE)
 
     # ALIGN AND TRAVERSE
-    def _do_align_traverse(self, sd: DroneState, drone_pos: np.ndarray) -> None:
+    def _do_align_traverse(self, sd: DroneState, image: np.ndarray | None,
+                            drone_pos: np.ndarray) -> None:
         gate = self.gates[self.current_gate]
         assert gate is not None
         trav_dir = compute_traversal_direction(gate.position[:2], gate.yaw)
         trav_dir_3d = np.array([trav_dir[0], trav_dir[1], 0.0])
 
+        # Thresholds for z-settle check before committing traverse altitude.
+        _Z_SETTLE_THRESH = 0.06  # m — servo correction small enough = centred
+        _Z_SETTLE_FRAMES = 3     # consecutive frames required
+
         if not self._traverse_started:
-            align_pos = gate.position - config.APPROACH_DIST * trav_dir_3d
-            align_pos[2] = gate.position[2]
+            align_pos_xy = gate.position[:2] - config.APPROACH_DIST * trav_dir
             look_yaw = atan2(trav_dir[1], trav_dir[0])
 
-            self._issue_goto(align_pos[0], align_pos[1], align_pos[2],
+            # Visual-servo correction during the final alignment. The
+            # reprojection-based xy may have a residual bias (gate.yaw is
+            # imperfect → align direction off); the servo trims that.
+            # For z we accumulate into the persistent setpoint (carried from
+            # APPROACH) rather than re-anchoring to drone_pos[2] each tick.
+            servo = np.zeros(3)
+            if image is not None:
+                detections = detect_all_gate_contours(image)
+                if detections:
+                    best = self._select_gate_detection(
+                        detections, drone_pos, sd.roll, sd.pitch, sd.yaw)
+                    if (best is not None
+                            and gate_pixel_width(best) >= self.MIN_GATE_PX_WIDTH):
+                        servo = self._visual_servo_offset(best, drone_pos,
+                                                          sd.roll, sd.pitch, sd.yaw,
+                                                          gate.position)
+                        desired_z = drone_pos[2] + servo[2]
+                        if self._servo_z_setpoint is None:
+                            self._servo_z_setpoint = desired_z
+                        else:
+                            self._servo_z_setpoint = (0.55 * self._servo_z_setpoint
+                                                      + 0.45 * desired_z)
+                        self._servo_z_setpoint = float(np.clip(
+                            self._servo_z_setpoint,
+                            config.Z_BOUNDS[0], config.Z_BOUNDS[1]))
+                        if abs(servo[2]) < _Z_SETTLE_THRESH:
+                            self._servo_z_settled += 1
+                        else:
+                            self._servo_z_settled = 0
+
+            target_x = align_pos_xy[0] + servo[0]
+            target_y = align_pos_xy[1] + servo[1]
+            target_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
+                        else drone_pos[2])
+            self._issue_goto(target_x, target_y, target_z,
                              look_yaw, cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-            if self._at_target(sd, target_xy=align_pos[:2],
-                               target_z=align_pos[2],
-                               target_yaw=look_yaw, pos_tol=0.10):
-                self._traverse_target = (
-                    gate.position + config.TRAVERSE_COMMAND_OVERSHOOT * trav_dir_3d)
-                self._traverse_target[2] = gate.position[2]
+            # Commit traverse altitude only after the z servo has settled
+            # (small correction = drone is vertically centred on the gate).
+            z_settled = self._servo_z_settled >= _Z_SETTLE_FRAMES
+            if (self._at_target(sd, target_xy=np.array([target_x, target_y]),
+                                target_z=target_z,
+                                target_yaw=look_yaw, pos_tol=0.10)
+                    and z_settled):
+                commit_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
+                            else drone_pos[2])
+                self._traverse_target = np.array([
+                    drone_pos[0] + config.TRAVERSE_COMMAND_OVERSHOOT * trav_dir[0],
+                    drone_pos[1] + config.TRAVERSE_COMMAND_OVERSHOOT * trav_dir[1],
+                    commit_z,
+                ])
                 self._traverse_started = True
                 self._cmd_target = None  # force re-issue
             return
@@ -530,7 +684,10 @@ class GateFSM:
         forward = float(np.dot(drone_pos[:2] - gate.position[:2], trav_dir))
         lateral = float(np.linalg.norm(
             (drone_pos[:2] - gate.position[:2]) - forward * trav_dir))
-        z_err = abs(drone_pos[2] - gate.position[2])
+        # z_err vs the locked traverse z (set to the drone's z at the
+        # moment servo had converged) — NOT vs gate.position[2] which
+        # carries the reprojection bias.
+        z_err = abs(drone_pos[2] - self._traverse_target[2])
         crossed = (forward >= config.TRAVERSE_OVERSHOOT
                    and lateral < 0.3 and z_err < 0.3)
         if crossed:
