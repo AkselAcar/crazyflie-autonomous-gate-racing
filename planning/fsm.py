@@ -75,9 +75,14 @@ class GateFSM:
     }
 
     # HLC re-issue thresholds (avoid spamming the radio link).
+    # MIN_REISSUE_INTERVAL = 0.1s ≈ 10 Hz, matched to the typical AI Deck
+    # JPEG-over-WiFi rate. Lower wouldn't help (we'd re-issue go_to on the
+    # same image); higher (the previous 0.4 s) bottlenecked the visual
+    # servo to 2.5 Hz — 20 cm of approach travel between corrections at
+    # NOMINAL_SPEED.
     REISSUE_POS_THRESHOLD = 0.05   # m
     REISSUE_YAW_THRESHOLD = 0.05   # rad
-    MIN_REISSUE_INTERVAL = 0.4     # s
+    MIN_REISSUE_INTERVAL = 0.1     # s
 
     # Arrival tolerances
     ARRIVAL_POS_TOL = 0.10
@@ -463,16 +468,23 @@ class GateFSM:
         Horizontal (y): edge-length asymmetry — scale-invariant, pitch has
         negligible effect on left/right symmetry.
 
-        Vertical (z): pitch-compensated centroid error scaled by distance.
-          We project the current gate estimate into the image using the full
-          drone attitude (R_cam2world), compare to the actual detected
-          centroid, and convert the pixel error to metres:
-            Δz = −(v_c − exp_v) / FOCAL_PX × dist
-          This is correct at all distances and is immune to forward-pitch
-          cancellation that made the edge-asymmetry servo ineffective far
-          from the gate.
+        Vertical (z): pitch-compensated altitude error.
+          Naively comparing v_c to CAM_CY assumes the optical axis is
+          horizontal. As soon as the drone pitches forward during the
+          approach (5–10° at NOMINAL_SPEED), the gate's image position
+          shifts up by FOCAL_PX × tan(pitch) ≈ 15–30 px even though the
+          drone is at the correct altitude, and the servo commands a
+          phantom z correction of 0.1–0.2 m.
 
-        VISUAL_SERVO_K_V is now a dimensionless feedback gain (~1.0).
+          Instead we project a synthetic point at (gate_x, gate_y, drone_z)
+          — "where the gate would appear if the drone were at the correct
+          altitude" — using the FULL camera-to-world rotation (so the same
+          pitch that shifts v_c also shifts target_v by the same amount).
+          The residual pixel_err is then purely an altitude offset, and
+          multiplying by distance recovers the metric error:
+            Δz = −K_V × (v_c − target_v) / FOCAL_PX × dist
+
+        VISUAL_SERVO_K_V is a dimensionless feedback gain (~1.0).
         """
         tl, tr, br, bl = corners  # TL TR BR BL — image space, shape (2,) each
 
@@ -483,26 +495,29 @@ class GateFSM:
         e_h = (l_left - l_right) / avg_h   # dimensionless ∈ (−1, 1)
         delta_y = -config.VISUAL_SERVO_K_H * e_h
 
-        # Vertical: centroid error relative to image centre, scaled by distance.
-        # At distance D, a centroid offset of (v_c − CY) pixels corresponds to
-        # a real-world vertical error of (v_c − CY)/FOCAL_PX × D metres.
-        # Targeting CY means "fly at the altitude where the gate centre appears
-        # in the middle of the image".  This signal is proportional to angular
-        # offset (not to perspective foreshortening) so it works at any range.
-        # We use the full camera-to-world rotation to get distance D correctly.
+        # Vertical: pitch-compensated altitude error (see docstring above).
         Rc2w = R_cam2world(roll, pitch, yaw)
         cam_pos_w = cam_position_world(drone_pos, roll, pitch, yaw)
         p_cam = Rc2w.T @ (gate_pos - cam_pos_w)
 
         if p_cam[2] > 0.1:
             v_c = float(np.mean(corners[:, 1]))
-            # v_c > CY: gate below image centre → drone above gate → move down
-            # v_c < CY: gate above image centre → drone below gate → move up
-            pixel_err = v_c - config.CAM_CY
+            # Synthetic "gate at drone's current altitude" — its projection
+            # is where v_c would land if the drone were already correctly
+            # centred vertically, with the same pitch as right now.
+            synthetic = np.array([gate_pos[0], gate_pos[1], drone_pos[2]])
+            p_syn = Rc2w.T @ (synthetic - cam_pos_w)
+            if p_syn[2] > 0.01:
+                target_v = config.FOCAL_PX * p_syn[1] / p_syn[2] + config.CAM_CY
+            else:
+                target_v = config.CAM_CY  # synthetic point fell behind camera
+            pixel_err = v_c - target_v
             dist = float(p_cam[2])
             delta_z = -config.VISUAL_SERVO_K_V * (pixel_err / config.FOCAL_PX) * dist
-            log.debug("VisServo e_h=%.3f pixel_err=%.1fpx v_c=%.1f dist=%.2fm dz=%.3fm",
-                      e_h, pixel_err, v_c, dist, delta_z)
+            log.debug(
+                "VisServo e_h=%.3f v_c=%.1f tgt_v=%.1f err=%.1fpx dist=%.2fm dz=%.3fm",
+                e_h, v_c, target_v, pixel_err, dist, delta_z,
+            )
         else:
             # Fallback: edge-length asymmetry (gate very close or behind)
             l_top    = float(np.linalg.norm(tr - tl))

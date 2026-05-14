@@ -1,8 +1,15 @@
 """Top-level entry point: connect, run the FSM, log telemetry.
 
-Usage (from C:\\Users\\niels\\Desktop\\Aerial_Robotics):
+Usage (from C:\\Users\\niels\\Desktop\\Aerial_Robotics\\Hardware_Project):
 
-    python -m Hardware_Project.main
+    python main.py
+
+Must be launched from inside ``Hardware_Project/`` so that ``config``,
+``hardware/``, ``perception/`` and ``planning/`` resolve as top-level
+imports. Running ``python -m Hardware_Project.main`` from the parent
+directory will fail with ``ModuleNotFoundError: config`` because the
+package layout puts ``config.py`` inside ``Hardware_Project/``, not at
+the workspace root.
 
 Spawns:
 - The Crazyflie radio link (cflib + Lighthouse log + HLC).
@@ -41,6 +48,11 @@ log = logging.getLogger(__name__)
 
 TICK_PERIOD: float = 0.05  # 20 Hz — plenty for HLC re-issue and detection
 MISSION_TIMEOUT_S: float = 240.0  # safety: assignment hard cap
+# Max age (s) of a camera frame before we treat it as missing. If the AI
+# Deck silently stops streaming, ``get_latest()`` keeps returning the
+# last frame forever; without this check, the FSM's lost-gate timeout
+# never triggers because the same stale image keeps refreshing it.
+MAX_FRAME_AGE_S: float = 0.5
 
 
 def main() -> None:
@@ -82,6 +94,8 @@ def main() -> None:
             saved_count = 0
             ticks_with_image = 0
             ticks_without_image = 0
+            ticks_stale_image = 0
+            last_frame_t: float = -1.0
             frames_dir = run_dir / "frames"
             if args.save_every > 0:
                 frames_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +109,19 @@ def main() -> None:
 
                     sd = cf.get_state()
                     frame = cam.get_latest()
-                    image = frame[0] if frame is not None else None
+                    # Drop the image if (a) we already processed this exact
+                    # frame on a previous tick (same timestamp), or (b) the
+                    # stream stopped delivering new frames recently. Both
+                    # symptoms are indistinguishable from the FSM's POV if
+                    # we don't filter here.
+                    image = None
+                    if frame is not None:
+                        img, frame_t = frame
+                        if frame_t != last_frame_t and (now - frame_t) <= MAX_FRAME_AGE_S:
+                            image = img
+                            last_frame_t = frame_t
+                        else:
+                            ticks_stale_image += 1
 
                     still_running = fsm.tick(sd, image)
 
@@ -135,9 +161,10 @@ def main() -> None:
             finally:
                 if args.save_every > 0:
                     log.info("Image save summary: %d saved / %d ticks with "
-                             "image / %d ticks without image",
+                             "image / %d ticks without image / %d ticks "
+                             "with stale-or-duplicate image",
                              saved_count, ticks_with_image,
-                             ticks_without_image)
+                             ticks_without_image, ticks_stale_image)
             # Whether we exit normally, by timeout, by Ctrl+C or by exception,
             # the CrazyflieLink __exit__ runs the emergency-land procedure
             # before closing the radio link.
