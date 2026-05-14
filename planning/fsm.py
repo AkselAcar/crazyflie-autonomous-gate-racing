@@ -678,9 +678,13 @@ class GateFSM:
                     and z_settled):
                 commit_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
                             else drone_pos[2])
+                # Commanded target = TRAVERSE_OVERSHOOT past the gate plane,
+                # in the traversal direction. Anchored on gate.position (not
+                # drone_pos) so the drone actually flies through the gate
+                # instead of stopping short of it.
                 self._traverse_target = np.array([
-                    drone_pos[0] + config.TRAVERSE_COMMAND_OVERSHOOT * trav_dir[0],
-                    drone_pos[1] + config.TRAVERSE_COMMAND_OVERSHOOT * trav_dir[1],
+                    gate.position[0] + config.TRAVERSE_OVERSHOOT * trav_dir[0],
+                    gate.position[1] + config.TRAVERSE_OVERSHOOT * trav_dir[1],
                     commit_z,
                 ])
                 self._traverse_started = True
@@ -703,7 +707,10 @@ class GateFSM:
         # moment servo had converged) — NOT vs gate.position[2] which
         # carries the reprojection bias.
         z_err = abs(drone_pos[2] - self._traverse_target[2])
-        crossed = (forward >= config.TRAVERSE_OVERSHOOT
+        # Crossed as soon as the drone is past the gate plane (with a tiny
+        # epsilon for sensor noise). The HLC trajectory still aims past the
+        # gate so the drone keeps non-zero velocity while transitioning.
+        crossed = (forward >= 0.05
                    and lateral < 0.3 and z_err < 0.3)
         if crossed:
             log.info("Gate %d crossed (fwd=%.2fm lat=%.2fm)",
