@@ -48,7 +48,7 @@ class MotionPlanner3D():
         self.run_planner()
 
     def construct_waypoints(self, gate_pos_csv_path, verbose=False):
-        offset_dist = config.APPROACH_DIST
+        offset_dist = config.ADD_POINT_DIST_FROM_GATE
 
         gate_pos_df = pd.read_csv(gate_pos_csv_path)
         gate_pos = gate_pos_df[["x", "y", "z"]].values.T

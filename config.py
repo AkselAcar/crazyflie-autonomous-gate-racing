@@ -159,7 +159,7 @@ PTS_PER_METER = 30.0                # Number of points per meter for trajectory
 MIN_T_F = 10.0                      # Minimum trajectory duration [s]
 TARGET_AVG_SPEED = 1.5              # Target averaged speed over trajectory [m/s]
 
-APPROACH_DIST = 0.15                # Distance of points before and after the gate [m]
+ADD_POINT_DIST_FROM_GATE = 0.15                # Distance of points before and after the gate [m]
 
 STARTING_POINT = TAKE_OFF_POS # (0.7, 0.0, 0.75)   # Starting point (x, y, z)
 FINISH_POINT_DIST = 0.5             # Finish point distance from last gate [m]
