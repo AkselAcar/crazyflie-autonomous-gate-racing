@@ -227,7 +227,7 @@ class GateFSM:
                 return False
         # Velocity check — make sure the drone has settled.
         speed = (sd.v_x ** 2 + sd.v_y ** 2 + sd.v_z ** 2) ** 0.5
-        return speed < self.ARRIVAL_VEL_TOL * 3  # generous
+        return speed < self.ARRIVAL_VEL_TOL
 
     # TAKEOFF
     def _do_takeoff(self, sd: DroneState, drone_pos: np.ndarray) -> None:
