@@ -81,6 +81,10 @@ class RaceFSM:
         self._land_phase: int = 0
         self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2]
 
+        # Actual flown trajectory (estimator pose per tick), recorded for
+        # the post-mission overlay against the planned trajectory.
+        self._flown_path: list[np.ndarray] = []
+
     # Public API
     def tick(self, sd: DroneState, image: np.ndarray | None) -> bool:
         """Drive the FSM one step. Returns False when mission complete."""
@@ -88,6 +92,7 @@ class RaceFSM:
             return False
 
         drone_pos = np.array([sd.x_global, sd.y_global, sd.z_global])
+        self._flown_path.append(drone_pos)
 
         if self.state == self.TAKEOFF:
             self._do_takeoff(sd, drone_pos)
@@ -259,3 +264,4 @@ class RaceFSM:
                 self._cmd_t = time.monotonic()
             elif time.monotonic() - self._cmd_t >= config.HLC_LAND_DURATION + 0.5:
                 self._set_state(self.DONE)
+                self.motion_planner.plot(np.array(self._flown_path))

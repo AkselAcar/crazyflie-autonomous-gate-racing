@@ -270,7 +270,7 @@ class MotionPlanner3D():
 
         return trajectory_setpoints, time_setpoints
     
-    def plot(self):
+    def plot(self, flown_path=None):
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -278,7 +278,16 @@ class MotionPlanner3D():
         ax.scatter(self.path_waypoints[0,0], self.path_waypoints[0,1], self.path_waypoints[0,2], c='b', marker='o', s=100, label='Starting Point')
         ax.scatter(self.path_waypoints[-1,0], self.path_waypoints[-1,1], self.path_waypoints[-1,2], c='r', marker='o', s=100, label='Finishing Point')
         ax.scatter(self.path_waypoints[1:-2,0], self.path_waypoints[1:-2,1], self.path_waypoints[1:-2,2], c='g', marker='x', s=50, label='Waypoints')
-        ax.plot(self.trajectory_setpoints[:,0], self.trajectory_setpoints[:,1], self.trajectory_setpoints[:,2], c='b', label='Trajectory')
+        ax.plot(self.trajectory_setpoints[:,0], self.trajectory_setpoints[:,1], self.trajectory_setpoints[:,2], c='b', label='Planned trajectory')
+
+        # Overlay the actual flown trajectory from the drone estimator.
+        if flown_path is not None and len(flown_path) > 0:
+            flown = np.asarray(flown_path)
+            ax.plot(flown[:, 0], flown[:, 1], flown[:, 2],
+                    c='orange', linewidth=2, linestyle='--',
+                    label='Flown (estimator)')
+            ax.scatter(flown[0, 0], flown[0, 1], flown[0, 2],
+                       c='orange', marker='^', s=80, label='Flight start')
         
         # Plot gates as vertical rectangles
         for i in range(self.gate_pos.shape[1]):
