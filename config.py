@@ -13,7 +13,7 @@ from math import pi, tan
 import numpy as np
 
 # Crazyflie radio + AI Deck network
-CF_URI: str = "radio://0/100/2M/E7E7E7E710"
+CF_URI: str = "radio://0/125/2M/E7E7E7E710"
 AI_DECK_IP: str = "192.168.4.1"
 AI_DECK_PORT: int = 5000
 

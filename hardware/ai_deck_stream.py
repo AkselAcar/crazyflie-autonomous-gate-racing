@@ -1,14 +1,29 @@
-"""AI Deck JPEG streamer over UDP.
+"""AI Deck JPEG streamer — UDP or TCP transport.
 
-Matches the wire protocol used by the Bitcraze FPV example (UDP, not TCP).
-The AI Deck sends a `START_MAGIC` packet to begin streaming, then delivers
-frames as a sequence of UDP datagrams, each prefixed by a 4-byte CPX header.
+The AI Deck delivers camera frames as CPX packets. Each CPX packet is a
+4-byte header followed by a payload:
 
-Wire format (per datagram):
-  - 4-byte CPX header (discarded here)
-  - image header (11 bytes, magic 0xBC): <B H H B B I> = magic, w, h, ?, ?, size
-    → signals start of a new JPEG frame
-  - subsequent datagrams carry raw payload bytes to fill `size` bytes total
+  - header: ``<H B B>`` = (length, routing, function)
+  - ``length`` counts the 2 routing bytes + payload, so
+    ``payload_len = length - 2``
+  - an *image header* payload (11 bytes, magic 0xBC):
+    ``<B H H B B I>`` = magic, width, height, depth, format, size
+    → signals the start of a JPEG; ``size`` data bytes follow in the
+    subsequent CPX packets.
+
+Two transports are supported:
+
+  - ``transport="tcp"`` (recommended): the stock Bitcraze
+    ``wifi-img-streamer`` protocol. TCP guarantees ordered, lossless
+    delivery, so frame assembly is exact — no truncated/overrun frames.
+  - ``transport="udp"``: a UDP firmware variant. A ``START_MAGIC`` packet
+    kicks off streaming, then frames arrive as a sequence of datagrams.
+    UDP has no delivery/order guarantee, so ~half the frames can be lost
+    on a noisy WiFi link. Kept as a fallback.
+
+Either way, some JPEGs are truncated a few scan rows short by the GAP8
+encoder; ``_decode`` keeps those (still usable) and silences libjpeg's
+stderr warning. See ``_suppress_c_stderr``.
 """
 
 from __future__ import annotations
@@ -44,18 +59,22 @@ _EOI: bytes = b'\xff\xd9'
 _OVERRUN_SLACK: int = 2048
 # How often the background thread logs its assembly statistics.
 _REPORT_INTERVAL_S: float = 5.0
-# One-shot startup debugging: dump the first N CPX headers (to spot a
-# per-datagram sequence number) and save the first M assembled frames to
-# disk so the corruption pattern can be inspected in an image viewer.
+# Socket timeout while reading — short enough to notice a stop request.
+_SOCK_TIMEOUT_S: float = 1.0
+_CONNECT_TIMEOUT_S: float = 5.0
+# One-shot startup debugging: dump the first N CPX headers (UDP only, to
+# spot a per-datagram sequence number) and save the first M assembled
+# frames to disk so the corruption pattern can be inspected.
 _DEBUG_HEADER_DUMP_N: int = 60
 _DEBUG_SAVE_N: int = 6
 
 
 @dataclass
 class _StreamStats:
-    """Per-window counters for diagnosing UDP frame-assembly health."""
+    """Per-window counters for diagnosing frame-assembly health."""
 
-    datagrams: int = 0           # UDP datagrams received
+    transport: str = "udp"
+    datagrams: int = 0           # datagrams (UDP) / CPX packets (TCP)
     headers_ok: int = 0          # valid image headers
     headers_bad: int = 0         # headers failing the w/h/size check
     orphan_chunks: int = 0       # payload chunks with no active frame
@@ -70,17 +89,19 @@ class _StreamStats:
         bad = decoded - self.frames_ok
         fps = self.frames_ok / window_s if window_s > 0 else 0.0
         log.info(
-            "AI Deck %.0fs: %.1f fps ok | %d datagrams, %d frames "
+            "AI Deck [%s] %.0fs: %.1f fps ok | %d packets, %d frames "
             "(%d ok, %d truncated, %d overrun, %d preempted, %d decode-fail) "
             "| %d bad headers, %d orphan chunks",
-            window_s, fps, self.datagrams, decoded, self.frames_ok,
-            self.frames_truncated, self.frames_overrun, self.frames_preempted,
-            self.decode_fail, self.headers_bad, self.orphan_chunks,
+            self.transport, window_s, fps, self.datagrams, decoded,
+            self.frames_ok, self.frames_truncated, self.frames_overrun,
+            self.frames_preempted, self.decode_fail, self.headers_bad,
+            self.orphan_chunks,
         )
         if decoded > 0 and bad > 0:
-            log.warning("AI Deck: %d/%d frames discarded as malformed "
-                        "(UDP packet loss — corrupt-JPEG noise comes from here)",
-                        bad, decoded)
+            cause = ("AI Deck encoder-side JPEG truncation" if self.transport
+                     == "tcp" else "UDP packet loss")
+            log.warning("AI Deck: %d/%d frames discarded as malformed (%s)",
+                        bad, decoded, cause)
 
 
 @contextlib.contextmanager
@@ -111,14 +132,22 @@ def _suppress_c_stderr():
 
 
 class AIDeckStream:
-    """Background thread that reads UDP frames and stores the latest one."""
+    """Background thread that reads camera frames and stores the latest one.
+
+    Args:
+        transport: ``"tcp"`` (recommended, lossless) or ``"udp"`` (fallback).
+    """
 
     def __init__(
         self,
         host: str = config.AI_DECK_IP,
         port: int = config.AI_DECK_PORT,
         local_port: int = _LOCAL_PORT,
+        transport: str = "udp",
     ) -> None:
+        if transport not in ("tcp", "udp"):
+            raise ValueError(f"transport must be 'tcp' or 'udp', got {transport!r}")
+        self._transport = transport
         self._remote = (host, port)
         self._local_port = local_port
         self._sock: socket.socket | None = None
@@ -129,14 +158,14 @@ class AIDeckStream:
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> "AIDeckStream":
-        log.info("Opening UDP stream from AI Deck %s:%d (local port %d)",
-                 *self._remote, self._local_port)
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RECV_BUF)
-        self._sock.bind(('0.0.0.0', self._local_port))
-        self._sock.sendto(_START_MAGIC, self._remote)
+        if self._transport == "tcp":
+            self._open_tcp()
+            target = self._loop_tcp
+        else:
+            self._open_udp()
+            target = self._loop_udp
         self._thread = threading.Thread(
-            target=self._loop, name="AIDeckStream", daemon=True,
+            target=target, name="AIDeckStream", daemon=True,
         )
         self._thread.start()
         return self
@@ -151,13 +180,144 @@ class AIDeckStream:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
-    def _loop(self) -> None:
+    # -- socket setup --------------------------------------------------
+
+    def _open_udp(self) -> None:
+        log.info("Opening UDP stream from AI Deck %s:%d (local port %d)",
+                 *self._remote, self._local_port)
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RECV_BUF)
+        self._sock.bind(('0.0.0.0', self._local_port))
+        self._sock.settimeout(_SOCK_TIMEOUT_S)
+        self._sock.sendto(_START_MAGIC, self._remote)
+
+    def _open_tcp(self) -> None:
+        log.info("Opening TCP stream from AI Deck %s:%d", *self._remote)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RECV_BUF)
+        sock.settimeout(_CONNECT_TIMEOUT_S)
+        try:
+            sock.connect(self._remote)
+        except OSError as e:
+            sock.close()
+            raise RuntimeError(
+                f"Cannot connect to AI Deck at {self._remote[0]}:"
+                f"{self._remote[1]} over TCP ({e}). If the firmware is the "
+                f"UDP variant, use transport='udp' instead."
+            ) from e
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.settimeout(_SOCK_TIMEOUT_S)
+        self._sock = sock
+
+    # -- TCP receive loop ----------------------------------------------
+
+    def _recv_exact(self, n: int) -> bytearray | None:
+        """Read exactly ``n`` bytes from the TCP socket.
+
+        Returns ``None`` if the stream is stopping or the peer closed the
+        connection. ``recv`` timeouts are retried so a stop request is
+        still noticed promptly.
+        """
+        assert self._sock is not None
+        data = bytearray()
+        while len(data) < n:
+            if self._stop.is_set():
+                return None
+            try:
+                chunk = self._sock.recv(n - len(data))
+            except socket.timeout:
+                continue
+            if not chunk:
+                return None  # peer closed the connection
+            data.extend(chunk)
+        return data
+
+    def _recv_cpx_packet(self) -> bytearray | None:
+        """Read one CPX packet's payload off the TCP stream.
+
+        Header is ``<H B B>`` = (length, routing, function); ``length``
+        includes the 2 routing bytes, so ``payload_len = length - 2``.
+        """
+        header = self._recv_exact(_CPX_HEADER_SIZE)
+        if header is None:
+            return None
+        length = struct.unpack('<H', header[:2])[0]
+        if length <= 2:
+            return bytearray()
+        return self._recv_exact(length - 2)
+
+    def _loop_tcp(self) -> None:
+        assert self._sock is not None
+        stats = _StreamStats(transport="tcp")
+        last_report = time.monotonic()
+        dbg_saved = 0
+
+        try:
+            while not self._stop.is_set():
+                now = time.monotonic()
+                if now - last_report >= _REPORT_INTERVAL_S:
+                    stats.log(now - last_report)
+                    stats = _StreamStats(transport="tcp")
+                    last_report = now
+
+                payload = self._recv_cpx_packet()
+                if payload is None:
+                    break  # connection closed or stopping
+                stats.datagrams += 1
+
+                # Only image-header packets matter; ignore other CPX traffic.
+                if not (len(payload) >= _IMG_HEADER_SIZE
+                        and payload[0] == _IMG_HEADER_MAGIC):
+                    continue
+                _, w, h, _, _, size = struct.unpack(
+                    '<BHHBBI', payload[:_IMG_HEADER_SIZE])
+                if not (w == config.CAM_WIDTH and h == config.CAM_HEIGHT
+                        and 0 < size < _RECV_BUF):
+                    stats.headers_bad += 1
+                    continue
+                stats.headers_ok += 1
+
+                # The JPEG follows as a run of CPX data packets summing
+                # to exactly `size` bytes.
+                buf = bytearray()
+                while len(buf) < size:
+                    chunk = self._recv_cpx_packet()
+                    if chunk is None:
+                        break
+                    buf.extend(chunk)
+                if len(buf) < size:
+                    stats.frames_truncated += 1  # connection dropped mid-frame
+                    break
+
+                if dbg_saved < _DEBUG_SAVE_N:
+                    ok_soi = buf[:2] == _SOI
+                    ok_eoi = buf[size - 2:size] == _EOI
+                    out = Path(f"ai_deck_raw_{dbg_saved:02d}.jpg")
+                    out.write_bytes(bytes(buf))
+                    log.info("DBG frame %d → %s  size=%d buf=%d soi=%s eoi=%s",
+                             dbg_saved, out, size, len(buf), ok_soi, ok_eoi)
+                    dbg_saved += 1
+
+                gray = self._decode(buf, size, stats)
+                if gray is not None:
+                    stats.frames_ok += 1
+                    with self._lock:
+                        self._latest = gray
+                        self._latest_t = time.monotonic()
+
+        except OSError as e:
+            if not self._stop.is_set():
+                log.error("AI Deck TCP stream stopped: %s", e)
+
+    # -- UDP receive loop ----------------------------------------------
+
+    def _loop_udp(self) -> None:
         assert self._sock is not None
         buf = bytearray()
         expected_size = 0
         receiving = False
 
-        stats = _StreamStats()
+        stats = _StreamStats(transport="udp")
         last_report = time.monotonic()
 
         # One-shot startup debugging (see _DEBUG_* constants).
@@ -171,10 +331,9 @@ class AIDeckStream:
                 now = time.monotonic()
                 if now - last_report >= _REPORT_INTERVAL_S:
                     stats.log(now - last_report)
-                    stats = _StreamStats()
+                    stats = _StreamStats(transport="udp")
                     last_report = now
 
-                self._sock.settimeout(1.0)
                 try:
                     data, _ = self._sock.recvfrom(2048)
                 except socket.timeout:
@@ -261,6 +420,8 @@ class AIDeckStream:
             if not self._stop.is_set():
                 log.error("AI Deck stream stopped: %s", e)
 
+    # -- decoding ------------------------------------------------------
+
     def _decode(self, buf: bytearray, expected_size: int,
                 stats: _StreamStats) -> np.ndarray | None:
         """Validate and decode a fully-assembled frame buffer.
@@ -289,7 +450,8 @@ class AIDeckStream:
             return None
         return img
 
-    # Public API
+    # -- public API ----------------------------------------------------
+
     def get_latest(self) -> tuple[np.ndarray, float] | None:
         """Return ``(grayscale_image, monotonic_timestamp)`` or ``None``."""
         with self._lock:

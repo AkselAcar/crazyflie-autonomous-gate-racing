@@ -59,6 +59,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-camera", action="store_true",
                         help="run without the AI Deck stream (FSM will not detect gates)")
+    parser.add_argument("--camera-transport", choices=("udp", "tcp"),
+                        default="udp",
+                        help="AI Deck transport: 'tcp' is lossless and "
+                             "recommended; 'udp' is the fallback (default)")
     parser.add_argument("--log-dir", default=str(
         Path(__file__).resolve().parent / "logs"))
     parser.add_argument("--save-every", type=int, default=0,
@@ -81,7 +85,8 @@ def main() -> None:
     log.info("Run logs → %s", run_dir)
 
     with CrazyflieLink() as cf:
-        cam_ctx = AIDeckStream() if not args.no_camera else _NullStream()
+        cam_ctx = (AIDeckStream(transport=args.camera_transport)
+                   if not args.no_camera else _NullStream())
         with cam_ctx as cam, open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
