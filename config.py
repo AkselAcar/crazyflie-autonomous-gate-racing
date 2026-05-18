@@ -93,8 +93,12 @@ DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 
 # Approach + reprojection-refinement tuning
 APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
-TRAVERSE_OVERSHOOT: float = 0.15          # m past the gate plane
-TRAVERSE_COMMAND_OVERSHOOT: float = 0.30  # m past the gate, used as commanded target
+# Distance past the gate plane that we command as the traverse target.
+# HLC's firmware min-snap reaches zero velocity AT the endpoint, so we
+# need to aim past the gate to keep non-zero velocity at the plane
+# itself. 0.30 m gives a clean fly-through at HLC_TRAVERSE_DURATION=1.2 s
+# over the ~1.1 m total trajectory from align to overshoot.
+TRAVERSE_OVERSHOOT: float = 0.30          # m past the gate plane
 APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8
 CONVERGENCE_MIN_SAMPLES: int = 6
