@@ -64,10 +64,13 @@ def main() -> None:
     parser.add_argument("--save-every", type=int, default=0,
                         help="save every Nth camera frame as "
                              "[original|mask|annotated] composite (0 = off)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="enable DEBUG logging (visual-servo and "
+                             "reprojection traces); default level is INFO")
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
