@@ -16,11 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from hardware.ai_deck_stream import AIDeckStream
 from hardware.crazyflie_link import CrazyflieLink
-from perception.gate_detector import (
-    annotate,
-    build_mask,
-    detect_all_gate_contours,
-)
 from race_fsm import RaceFSM
 
 log = logging.getLogger(__name__)

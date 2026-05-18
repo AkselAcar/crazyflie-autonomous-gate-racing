@@ -223,8 +223,7 @@ class RaceFSM:
         if time.monotonic() - self._cmd_t < config.HLC_TAKEOFF_DURATION:
             return
         if abs(sd.z_global - config.EXPLORE_ALT) < self.ARRIVAL_Z_TOL:
-            self._init_yaw_scan(self.current_gate, drone_pos, sd.yaw)
-            self._set_state(self.YAW_SCAN)
+            self._set_state(self.TRAJECTORY_PLANNING)
 
     # LAND
     def _init_land(self, drone_pos: np.ndarray, drone_yaw: float) -> None:

@@ -21,7 +21,7 @@ AI_DECK_PORT: int = 5000
 # Lighthouse origin is at the centre of the arena. CCW angular sectors of
 # 60° (= pi/6 half-width). Same shape as Webots, but the "circle" is now
 # centred on (0, 0) instead of (4, 4).
-CIRCLE_CENTRE: np.ndarray = np.array([0.0, 0.0])
+CIRCLE_CENTRE: np.ndarray = np.array([-0.10, 0.0])
 INNER_RADIUS: float = 0.2
 OUTER_RADIUS: float = 1.5
 NUM_GATES: int = 5
@@ -43,9 +43,9 @@ Y_BOUNDS: tuple[float, float] = (-1.5, 1.5)
 Z_BOUNDS: tuple[float, float] = (0.05, 2.0)
 
 # Take-off and exploration
-TAKE_OFF_POS: np.ndarray = np.array([1.0, 0.0, 0.05])
+TAKE_OFF_POS: np.ndarray = np.array([1.2, 0.0, 0.05])
 TAKE_OFF_YAW: float = pi  # facing -x, towards the centre of the arena
-EXPLORE_ALT: float = 1.0
+EXPLORE_ALT: float = 1.2
 
 # Gate physical properties — variable, same as Webots assignment.
 # Width is unknown a priori and stays a free parameter in reprojection.
