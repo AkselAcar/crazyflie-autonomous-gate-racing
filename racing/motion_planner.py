@@ -320,7 +320,7 @@ class MotionPlanner3D():
         plt.show()
 
 if __name__ == "__main__":
-    csv_file_path = "racing/gate_pos_csv/gates_info_generated.csv"
+    csv_file_path = "racing/gate_pos_csv/gates_info_measured.csv"
     test = MotionPlanner3D(gate_pos_csv_path=csv_file_path, verbose=False)
     gates_df = pd.read_csv(csv_file_path)
     plot_gates(gates_df, show_plot=True)
