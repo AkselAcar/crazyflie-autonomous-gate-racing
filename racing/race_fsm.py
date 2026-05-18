@@ -19,15 +19,13 @@ Key adaptations vs the Webots original:
 from __future__ import annotations
 
 import logging
+import sys
 import time
-from dataclasses import dataclass
-from math import atan2, cos, sin
+from math import atan2
+from pathlib import Path
 
-import cv2
 import numpy as np
 
-import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from hardware.crazyflie_link import CrazyflieLink, DroneState
@@ -96,7 +94,7 @@ class RaceFSM:
         elif self.state == self.TRAJECTORY_PLANNING:
             self._do_trajectory_planning(sd, drone_pos)
         elif self.state == self.RACING:
-            self._do_racing()
+            self._do_racing(sd)
         elif self.state == self.LAND:
             self._do_land(sd, drone_pos)
 
@@ -110,54 +108,63 @@ class RaceFSM:
                      self._STATE_NAMES[new_state])
             self.state = new_state
 
-    def _do_trajectory_planning(self) -> None:
-        self.motion_planner = MotionPlanner3D(self.cf.position, config.GATE_POS_CSV_PATH, verbose=config.MOTION_PLANNER_VERBOSE)
+    def _do_trajectory_planning(self, sd: DroneState,
+                                drone_pos: np.ndarray) -> None:
+        # Plan the racing trajectory from the current pose through the
+        # known gate positions. Runs synchronously: the drone holds its
+        # hover via the HLC while the polynomial solve completes.
+        self.motion_planner = MotionPlanner3D(
+            tuple(drone_pos), config.GATE_POS_CSV_PATH,
+            verbose=config.MOTION_PLANNER_VERBOSE)
         self.lap_start_time = time.monotonic()
-        self.traj_idx = 0
         self._set_state(self.RACING)
-    
-    def _do_racing(self) -> None:
 
-        # Compute time elapsed and expected idx
-        elapsed_time = time.monotonic() - self.lap_start_time
+    def _do_racing(self, sd: DroneState) -> None:
+        traj = self.motion_planner.trajectory_setpoints
         time_vector = self.motion_planner.time_setpoints
-        idx = np.searchsorted(time_vector, elapsed_time)
 
-        if idx >= len(self.motion_planner.trajectory_setpoints):
-            # Trajectory complete, transition to LAND
-            self._init_land(self.cf.position, self.cf.attitude[2, 0])
+        # Setpoint index matching the elapsed trajectory time.
+        elapsed_time = time.monotonic() - self.lap_start_time
+        idx = int(np.searchsorted(time_vector, elapsed_time))
+
+        if idx >= len(traj):
+            # Trajectory complete → land.
+            self._init_land()
             self._set_state(self.LAND)
             return
 
-        # Extract setpoints
-        sp_current = self.trajectory_setpoints[idx]
-        sp_next = self.trajectory_setpoints[min(idx + 1, len(self.trajectory_setpoints) - 1)]
-
-        # Determine path velocity for lookahead
-        ds = np.linalg.norm(sp_next[:2] - sp_current[:2])
-        dt_planner = time_vector[min(idx + 1, len(time_vector) - 1)] - time_vector[idx]
+        # Local path speed, used to size a speed-dependent lookahead.
+        sp_current = traj[idx]
+        sp_next = traj[min(idx + 1, len(traj) - 1)]
+        ds = float(np.linalg.norm(sp_next[:2] - sp_current[:2]))
+        dt_planner = (time_vector[min(idx + 1, len(time_vector) - 1)]
+                      - time_vector[idx])
         path_velocity = ds / dt_planner if dt_planner > 0 else 0.0
 
-        # Calculate Dynamic Lookahead
-        # higher multiplier = cuts corners tighter, lower = swings wide
-        dynamic_offset = int(config.BASE_LOOKAHEAD + (path_velocity * config.LOOKAHEAD_SPEED_MULTIPLIER))
-
-        # Dampen the lookahead for the first 1.0 second of the trajectory
+        # Lookahead distance in metres → number of trajectory setpoints.
+        # higher multiplier = cuts corners tighter, lower = swings wide.
+        lookahead_m = (config.BASE_LOOKAHEAD
+                       + path_velocity * config.LOOKAHEAD_SPEED_MULTIPLIER)
+        lookahead_idx = int(lookahead_m * config.PTS_PER_METER)
+        # Ramp the lookahead in over the first second to avoid a big jump.
         if elapsed_time < 1.0:
-            dynamic_offset = int(dynamic_offset * elapsed_time)
-        
-        pos_lookahead = min(idx + dynamic_offset, len(self.trajectory_setpoints) - 1)
-        sp = self.trajectory_setpoints[pos_lookahead]
-        yaw_lookahead = min(idx + dynamic_offset + 5, len(self.trajectory_setpoints) - 1)
-        sp_future = self.trajectory_setpoints[yaw_lookahead]
-        sp_dot_vec = sp_future - sp
-        
-        if np.linalg.norm(sp_dot_vec[:2]) > 0.01:
-            yaw_sp = np.atan2(sp_dot_vec[1], sp_dot_vec[0])
-        else:
-            yaw_sp = self.attitude[2, 0]
+            lookahead_idx = int(lookahead_idx * elapsed_time)
 
-        self._issue_goto(sp[0], sp[1], sp[2], yaw_sp, cur_pos=self.cf.position, cur_yaw=self.cf.attitude[2, 0])
+        pos_idx = min(idx + lookahead_idx, len(traj) - 1)
+        sp = traj[pos_idx]
+        yaw_idx = min(pos_idx + 5, len(traj) - 1)
+        sp_future = traj[yaw_idx]
+
+        # Yaw faces along the path; hold current yaw when near-stationary.
+        sp_dir = sp_future - sp
+        if np.linalg.norm(sp_dir[:2]) > 0.01:
+            yaw_sp = atan2(sp_dir[1], sp_dir[0])
+        else:
+            yaw_sp = sd.yaw
+
+        drone_pos = np.array([sd.x_global, sd.y_global, sd.z_global])
+        self._issue_goto(float(sp[0]), float(sp[1]), float(sp[2]), yaw_sp,
+                         cur_pos=drone_pos, cur_yaw=sd.yaw)
 
     
     # HLC helpers
@@ -226,7 +233,7 @@ class RaceFSM:
             self._set_state(self.TRAJECTORY_PLANNING)
 
     # LAND
-    def _init_land(self, drone_pos: np.ndarray, drone_yaw: float) -> None:
+    def _init_land(self) -> None:
         self._land_phase = 0
         self._land_issued = False
         self._cmd_target = None

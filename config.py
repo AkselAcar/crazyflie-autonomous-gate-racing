@@ -154,14 +154,14 @@ PLOT_DIR: str = "camera_plots"
 # ===================================================
 #                       LAP 2&3
 # ===================================================
-GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_generated.csv"
+GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_circle_test.csv"
 MOTION_PLANNER_VERBOSE = False
 
 VEL_LIM = 25.0
 ACC_LIM = 250.0 
 PTS_PER_METER = 30.0                # Number of points per meter for trajectory
 MIN_T_F = 10.0                      # Minimum trajectory duration [s]
-TARGET_AVG_SPEED = 1.5              # Target averaged speed over trajectory [m/s]
+TARGET_AVG_SPEED = 0.5              # Target averaged speed over trajectory [m/s]
 
 ADD_POINT_DIST_FROM_GATE = 0.15                # Distance of points before and after the gate [m]
 

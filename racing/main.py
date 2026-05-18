@@ -16,6 +16,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from hardware.ai_deck_stream import AIDeckStream
 from hardware.crazyflie_link import CrazyflieLink
+from perception.gate_detector import (
+    annotate,
+    build_mask,
+    detect_all_gate_contours,
+)
 from race_fsm import RaceFSM
 
 log = logging.getLogger(__name__)
@@ -124,7 +129,7 @@ def main() -> None:
 
 
 def _save_debug_frame(image: np.ndarray, frames_dir: Path,
-                      idx: int, fsm: GateFSM) -> None:
+                      idx: int, fsm: RaceFSM) -> None:
     """Save [original | mask | annotated] composite with FSM state overlay."""
     dets = detect_all_gate_contours(image)
     mask = build_mask(image)
