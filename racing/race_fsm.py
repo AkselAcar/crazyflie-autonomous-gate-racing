@@ -84,11 +84,13 @@ class RaceFSM:
         # planned points can be compared instant-by-instant.
         self._flown_path: list[np.ndarray] = []
         self._flown_times: list[float] = []
-        # Index into _flown_path where the racing trajectory begins. The
-        # planned trajectory starts at that same pose, so the post-mission
-        # overlay slices from this index — the takeoff + planning poses
-        # before it are excluded to keep both curves coherent.
+        # Index range in _flown_path covering the racing trajectory. The
+        # planned trajectory spans the race start pose to the last
+        # setpoint, so the post-mission overlay slices [start:end] — the
+        # takeoff/planning poses before and the landing poses after are
+        # excluded to keep both curves coherent.
         self._race_path_start_idx: int = 0
+        self._race_path_end_idx: int | None = None
 
     # Public API
     def tick(self, sd: DroneState, image: np.ndarray | None) -> bool:
@@ -148,6 +150,7 @@ class RaceFSM:
         if idx >= len(traj):
             # Trajectory complete → hand control back to the HLC and land.
             self.cf.notify_setpoint_stop()
+            self._race_path_end_idx = len(self._flown_path)
             self._init_land()
             self._set_state(self.LAND)
             return
@@ -250,11 +253,15 @@ class RaceFSM:
             elif time.monotonic() - self._cmd_t >= config.HLC_LAND_DURATION + 0.5:
                 self._set_state(self.DONE)
                 # Overlay only the racing portion of the flown path so it
-                # starts at the same pose as the planned trajectory. The
-                # timestamps are rebased to trajectory time (0 at race
+                # spans the same range as the planned trajectory: from the
+                # race start pose to the last setpoint (landing excluded).
+                # Timestamps are rebased to trajectory time (0 at race
                 # start) to match the planner's own time axis.
-                idx = self._race_path_start_idx
-                flown = np.array(self._flown_path[idx:])
-                flown_times = (np.array(self._flown_times[idx:])
+                i0 = self._race_path_start_idx
+                i1 = (self._race_path_end_idx
+                      if self._race_path_end_idx is not None
+                      else len(self._flown_path))
+                flown = np.array(self._flown_path[i0:i1])
+                flown_times = (np.array(self._flown_times[i0:i1])
                                - self.lap_start_time)
                 self.motion_planner.plot(flown, flown_times)

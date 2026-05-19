@@ -90,12 +90,15 @@ class MotionPlanner3D():
             p_exit[1] += dy
             waypoints.append(tuple(p_exit))
 
-            if index == num_gates*2 - 1:
-                p_final = p_exit.copy()
-                p_final[0] = p_exit[0] + config.FINISH_POINT_DIST * np.cos(yaw)
-                p_final[1] = p_exit[1] + config.FINISH_POINT_DIST * np.sin(yaw)
-                waypoints.append(tuple(p_final))
-            
+        # Final waypoint: back over the take-off pad at exploration
+        # altitude. Placing it far from the last gate (rather than just
+        # past it) lets the rest-to-rest min-jerk solve spread the
+        # deceleration over the whole return leg, so the drone still
+        # carries speed *through* the last gate. Landing happens after.
+        waypoints.append((float(self.starting_point[0]),
+                          float(self.starting_point[1]),
+                          config.EXPLORE_ALT))
+
         return np.array(waypoints), gate_pos, gate_orientations, gate_widths, gate_heights
 
     def run_planner(self):    
