@@ -167,6 +167,3 @@ ADD_POINT_DIST_FROM_GATE = 0.15                # Distance of points before and a
 
 STARTING_POINT = TAKE_OFF_POS # (0.7, 0.0, 0.75)   # Starting point (x, y, z)
 FINISH_POINT_DIST = 0.5             # Finish point distance from last gate [m]
-
-BASE_LOOKAHEAD = 0.0                   # Base lookahead distance for Pure Pursuit [m]
-LOOKAHEAD_SPEED_MULTIPLIER = 0.0       # Multiplier for dynamic lookahead based on speed [m/s]

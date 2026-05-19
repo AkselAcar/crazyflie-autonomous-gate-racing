@@ -4,6 +4,7 @@ Owns:
 - The radio link (Crazyradio PA → Crazyflie URI)
 - A continuous Lighthouse pose log at 100 Hz
 - A high-level commander wrapper (takeoff, go_to, land)
+- Low-level position-setpoint streaming for trajectory racing
 
 The state dict returned by `get_state()` mirrors the keys used by the
 Webots controller as closely as possible (`x_global`, `y_global`,
@@ -355,3 +356,34 @@ class CrazyflieLink:
     ) -> None:
         log.info("HLC land to %.2f m over %.1fs", height, duration)
         self.hlc.land(height, duration)
+
+    # Low-level setpoint streaming (used for trajectory racing)
+    def send_position_setpoint(
+        self, x: float, y: float, z: float, yaw: float,
+    ) -> None:
+        """Stream one absolute position setpoint (low-level commander).
+
+        Bypasses the High-Level Commander: the firmware position
+        controller tracks this exact setpoint, so the drone follows our
+        planned trajectory point-by-point instead of letting the HLC
+        rebuild its own min-snap path (which cuts corners).
+
+        Must be streamed continuously (>2 Hz) — if the firmware setpoint
+        watchdog goes ~500 ms without a packet it cuts the motors.
+
+        ``yaw`` is in radians (converted to the degrees cflib expects).
+        """
+        assert self._cf is not None
+        self._cf.commander.send_position_setpoint(x, y, z, math.degrees(yaw))
+
+    def notify_setpoint_stop(self, remain_valid_ms: int = 200) -> None:
+        """Hand control back to the High-Level Commander after streaming.
+
+        Call once after the last low-level setpoint and before re-issuing
+        any HLC command (``go_to``/``land``); otherwise the HLC stays
+        suppressed by the stale setpoint. ``remain_valid_ms`` keeps the
+        last streamed setpoint active for that long, bridging the gap
+        until the next HLC command takes over.
+        """
+        assert self._cf is not None
+        self._cf.commander.send_notify_setpoint_stop(remain_valid_ms)

@@ -137,7 +137,7 @@ def generate_gate_csv(
             "x":       round(x,          4),
             "y":       round(y,          4),
             "z":       round(goal_z,     4),
-            "theta":   (theta + np.pi) % (2*np.pi) - np.pi,   # surface-XY angle (rad); normal = theta + pi/2
+            "theta":   (theta + np.pi) % (2*np.pi) - np.pi,   # surface-XY angle (rad); CCW approach normal = theta - pi/2
             "width":   round(goal_width, 4),
             "height":  round(goal_height,4)
         })
@@ -148,7 +148,7 @@ def generate_gate_csv(
                 f"  [{np.degrees(seg_start):.0f}deg-{np.degrees(seg_end):.0f}deg]"
                 f"  pos=({x:+.3f}, {y:+.3f}, {goal_z:.3f})"
                 f"  theta_surface={np.degrees(theta):.1f}deg"
-                f"  theta_normal={np.degrees(theta + np.pi/2):.1f}deg"
+                f"  theta_normal={np.degrees(theta - np.pi/2):.1f}deg"
                 f"  w={goal_width:.3f}  h={goal_height:.3f}"
             )
 
@@ -170,7 +170,7 @@ def plot_gates(gates_df, show_plot=True):
     Plot gate positions and their approach normals on a 2D top-down map.
 
     Arrows show the gate NORMAL in the CCW approach direction
-    (= theta + pi/2, where theta is the surface angle stored in the CSV).
+    (= theta - pi/2, where theta is the surface angle stored in the CSV).
 
     All 12 segment boundaries are drawn as dotted radial lines clipped
     strictly between the inner and outer circles.
@@ -215,7 +215,7 @@ def plot_gates(gates_df, show_plot=True):
         theta = gate['theta']           # surface angle (CSV value)
         gnum  = int(gate['Gate'])
 
-        # Approach normal for CCW flight = surface angle + pi/2
+        # Approach normal for CCW flight = surface angle - pi/2
         normal_angle = theta - np.pi / 2
         dx = arrow_scale * np.cos(normal_angle)
         dy = arrow_scale * np.sin(normal_angle)

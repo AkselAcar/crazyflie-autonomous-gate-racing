@@ -247,6 +247,21 @@ class MotionPlanner3D():
             a_y_vals[i,:] = np.dot(self.compute_poly_matrix(t-self.times[seg_idx])[2],coeff_y[seg_idx*6:(seg_idx+1)*6])
             a_z_vals[i,:] = np.dot(self.compute_poly_matrix(t-self.times[seg_idx])[2],coeff_z[seg_idx*6:(seg_idx+1)*6])
 
+        # Yaw column: face along the trajectory tangent (direction of
+        # travel) so the drone always looks where it is going. Where it is
+        # near-stationary the tangent is undefined — hold the last valid
+        # yaw, then back-fill the leading points before the first motion.
+        speed_xy = np.sqrt(v_x_vals**2 + v_y_vals**2)
+        last_yaw = 0.0
+        for i in range(total_points):
+            if speed_xy[i, 0] > 0.05:
+                last_yaw = float(np.arctan2(v_y_vals[i, 0], v_x_vals[i, 0]))
+            yaw_vals[i, 0] = last_yaw
+        first_moving = next(
+            (i for i in range(total_points) if speed_xy[i, 0] > 0.05), None)
+        if first_moving:
+            yaw_vals[:first_moving, 0] = yaw_vals[first_moving, 0]
+
         trajectory_setpoints = np.hstack((x_vals, y_vals, z_vals, yaw_vals))
 
         # self.plot(obs, path_waypoints, trajectory_setpoints)
@@ -270,7 +285,7 @@ class MotionPlanner3D():
 
         return trajectory_setpoints, time_setpoints
     
-    def plot(self, flown_path=None):
+    def plot(self, flown_path=None, flown_times=None):
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -288,6 +303,33 @@ class MotionPlanner3D():
                     label='Flown (estimator)')
             ax.scatter(flown[0, 0], flown[0, 1], flown[0, 2],
                        c='orange', marker='^', s=80, label='Flight start')
+
+            # Temporal coherence: if a timestamp was recorded for each
+            # flown pose, sample the planned trajectory at those same
+            # instants. flown[i] and planned_at_t[i] then correspond to
+            # the same moment, so their gap is the true tracking error.
+            if flown_times is not None and len(flown_times) == len(flown):
+                ft = np.asarray(flown_times, dtype=float)
+                planned_at_t = np.column_stack([
+                    np.interp(ft, self.time_setpoints,
+                              self.trajectory_setpoints[:, dim])
+                    for dim in range(3)
+                ])
+                err = np.linalg.norm(flown - planned_at_t, axis=1)
+                # Error segments connecting each flown pose to where the
+                # drone *should* have been at that instant (strided to
+                # keep the 3D view readable).
+                stride = max(1, len(flown) // 80)
+                for i in range(0, len(flown), stride):
+                    ax.plot([flown[i, 0], planned_at_t[i, 0]],
+                            [flown[i, 1], planned_at_t[i, 1]],
+                            [flown[i, 2], planned_at_t[i, 2]],
+                            c='gray', linewidth=0.6, alpha=0.6)
+                ax.plot([], [], [], c='gray', linewidth=0.6,
+                        label=f'Tracking error (mean {err.mean():.3f} m, '
+                              f'max {err.max():.3f} m)')
+                print(f"[Trajectory] Tracking error vs time: "
+                      f"mean {err.mean():.3f} m, max {err.max():.3f} m")
         
         # Plot gates as vertical rectangles
         for i in range(self.gate_pos.shape[1]):

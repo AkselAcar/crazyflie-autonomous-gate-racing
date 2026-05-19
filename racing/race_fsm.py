@@ -1,19 +1,15 @@
-"""Lap-1 FSM, ported from the Webots assignment to High-Level Commander.
+"""Racing FSM for laps 2 & 3: fly the planned trajectory, then land.
 
-Pipeline per gate:
-    TAKEOFF → YAW_SCAN → APPROACH (multi-view triangulation)
-            → ALIGN_AND_TRAVERSE → (next gate or LAND)
-With FALLBACK_SCAN as a safety net when the gate is lost.
+Pipeline:
+    TAKEOFF → TRAJECTORY_PLANNING → RACING → LAND → DONE
 
-Key adaptations vs the Webots original:
-- No CommandSmoother. The High-Level Commander generates a min-snap
-  trajectory in firmware, so we issue ``cf.go_to(...)`` whenever the
-  target meaningfully changes and let the drone fly there.
-- ``tick`` is event-driven — it doesn't return a setpoint each tick.
-  It computes a desired (x, y, z, yaw) target and re-issues ``go_to``
-  only when the target moved by ``REISSUE_*`` or after
-  ``MIN_REISSUE_INTERVAL`` has elapsed.
-- A LAND state is added at the end (no RACE phase: lap 1 only).
+- TAKEOFF and LAND use the High-Level Commander (takeoff/go_to/land):
+  the firmware builds a min-snap path for those simple moves.
+- RACING streams low-level position setpoints. The motion planner's
+  min-jerk trajectory is sampled by elapsed time and each point is sent
+  with ``cf.send_position_setpoint`` so the drone tracks the planned
+  polynomial faithfully — no lookahead, no corner-cutting. On completion
+  ``cf.notify_setpoint_stop`` hands control back to the HLC for landing.
 """
 
 from __future__ import annotations
@@ -81,9 +77,18 @@ class RaceFSM:
         self._land_phase: int = 0
         self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2]
 
-        # Actual flown trajectory (estimator pose per tick), recorded for
-        # the post-mission overlay against the planned trajectory.
+        # Actual flown trajectory recorded for the post-mission overlay
+        # against the planned trajectory: one estimator pose plus its
+        # time.monotonic() timestamp per tick. The timestamps let the
+        # overlay resample the plan onto the same time base, so flown and
+        # planned points can be compared instant-by-instant.
         self._flown_path: list[np.ndarray] = []
+        self._flown_times: list[float] = []
+        # Index into _flown_path where the racing trajectory begins. The
+        # planned trajectory starts at that same pose, so the post-mission
+        # overlay slices from this index — the takeoff + planning poses
+        # before it are excluded to keep both curves coherent.
+        self._race_path_start_idx: int = 0
 
     # Public API
     def tick(self, sd: DroneState, image: np.ndarray | None) -> bool:
@@ -93,6 +98,7 @@ class RaceFSM:
 
         drone_pos = np.array([sd.x_global, sd.y_global, sd.z_global])
         self._flown_path.append(drone_pos)
+        self._flown_times.append(time.monotonic())
 
         if self.state == self.TAKEOFF:
             self._do_takeoff(sd, drone_pos)
@@ -121,6 +127,10 @@ class RaceFSM:
         self.motion_planner = MotionPlanner3D(
             tuple(drone_pos), config.GATE_POS_CSV_PATH,
             verbose=config.MOTION_PLANNER_VERBOSE)
+        # The planned trajectory's first waypoint is this exact pose, which
+        # tick() already appended to _flown_path this tick — mark its index
+        # so the overlay plots the flown path from the same starting point.
+        self._race_path_start_idx = max(0, len(self._flown_path) - 1)
         self.lap_start_time = time.monotonic()
         self._set_state(self.RACING)
 
@@ -128,50 +138,25 @@ class RaceFSM:
         traj = self.motion_planner.trajectory_setpoints
         time_vector = self.motion_planner.time_setpoints
 
-        # Setpoint index matching the elapsed trajectory time.
+        # Index the trajectory by elapsed time and stream the setpoint
+        # for *this* instant — no lookahead. The firmware position
+        # controller tracks each point directly, so the drone follows the
+        # planned polynomial faithfully instead of chord-cutting corners.
         elapsed_time = time.monotonic() - self.lap_start_time
         idx = int(np.searchsorted(time_vector, elapsed_time))
 
         if idx >= len(traj):
-            # Trajectory complete → land.
+            # Trajectory complete → hand control back to the HLC and land.
+            self.cf.notify_setpoint_stop()
             self._init_land()
             self._set_state(self.LAND)
             return
 
-        # Local path speed, used to size a speed-dependent lookahead.
-        sp_current = traj[idx]
-        sp_next = traj[min(idx + 1, len(traj) - 1)]
-        ds = float(np.linalg.norm(sp_next[:2] - sp_current[:2]))
-        dt_planner = (time_vector[min(idx + 1, len(time_vector) - 1)]
-                      - time_vector[idx])
-        path_velocity = ds / dt_planner if dt_planner > 0 else 0.0
+        sp = traj[idx]  # [x, y, z, yaw] — yaw already faces along the path
+        self.cf.send_position_setpoint(
+            float(sp[0]), float(sp[1]), float(sp[2]), float(sp[3]))
 
-        # Lookahead distance in metres → number of trajectory setpoints.
-        # higher multiplier = cuts corners tighter, lower = swings wide.
-        lookahead_m = (config.BASE_LOOKAHEAD
-                       + path_velocity * config.LOOKAHEAD_SPEED_MULTIPLIER)
-        lookahead_idx = int(lookahead_m * config.PTS_PER_METER)
-        # Ramp the lookahead in over the first second to avoid a big jump.
-        if elapsed_time < 1.0:
-            lookahead_idx = int(lookahead_idx * elapsed_time)
 
-        pos_idx = min(idx + lookahead_idx, len(traj) - 1)
-        sp = traj[pos_idx]
-        yaw_idx = min(pos_idx + 5, len(traj) - 1)
-        sp_future = traj[yaw_idx]
-
-        # Yaw faces along the path; hold current yaw when near-stationary.
-        sp_dir = sp_future - sp
-        if np.linalg.norm(sp_dir[:2]) > 0.01:
-            yaw_sp = atan2(sp_dir[1], sp_dir[0])
-        else:
-            yaw_sp = sd.yaw
-
-        drone_pos = np.array([sd.x_global, sd.y_global, sd.z_global])
-        self._issue_goto(float(sp[0]), float(sp[1]), float(sp[2]), yaw_sp,
-                         cur_pos=drone_pos, cur_yaw=sd.yaw)
-
-    
     # HLC helpers
     def _reissue_needed(self, target: np.ndarray) -> bool:
         if self._cmd_target is None:
@@ -264,4 +249,12 @@ class RaceFSM:
                 self._cmd_t = time.monotonic()
             elif time.monotonic() - self._cmd_t >= config.HLC_LAND_DURATION + 0.5:
                 self._set_state(self.DONE)
-                self.motion_planner.plot(np.array(self._flown_path))
+                # Overlay only the racing portion of the flown path so it
+                # starts at the same pose as the planned trajectory. The
+                # timestamps are rebased to trajectory time (0 at race
+                # start) to match the planner's own time axis.
+                idx = self._race_path_start_idx
+                flown = np.array(self._flown_path[idx:])
+                flown_times = (np.array(self._flown_times[idx:])
+                               - self.lap_start_time)
+                self.motion_planner.plot(flown, flown_times)
