@@ -348,6 +348,10 @@ class GateFSM:
                 continue
             params[3] = enforce_correct_yaw_orientation(
                 params[0], params[1], params[3])
+            # Compensate the uncalibrated camera vertical bias: reprojection
+            # places the gate ~GATE_Z_OFFSET too low in z. xy/yaw/width are
+            # unaffected by the bias. See config.GATE_Z_OFFSET.
+            params[2] += config.GATE_Z_OFFSET
             if cost < self._scan_best_cost:
                 self._scan_best_cost = cost
                 self._scan_best_detection = params
@@ -427,6 +431,10 @@ class GateFSM:
             return False
         new_yaw = enforce_correct_yaw_orientation(
             params[0], params[1], params[3])
+        # Same camera-vertical-bias compensation as in the yaw scan, applied
+        # to the optimizer output (the warm-start prior is already corrected,
+        # but the reprojection pulls z back toward the biased value).
+        params[2] += config.GATE_Z_OFFSET
 
         new_pos = np.array(params[:3], dtype=np.float64)
         center_drift = float(np.linalg.norm(new_pos[:2] - gate.position[:2]))
@@ -514,6 +522,12 @@ class GateFSM:
             pixel_err = v_c - target_v
             dist = float(p_cam[2])
             delta_z = -config.VISUAL_SERVO_K_V * (pixel_err / config.FOCAL_PX) * dist
+            # Camera-vertical-bias compensation. The servo is a closed loop
+            # on a biased measurement: without this term it converges with
+            # the drone ~GATE_Z_OFFSET below the gate centre. Adding a
+            # constant shifts the loop's convergence point up by the same
+            # amount (K_V=1 → delta_z is metric). See config.GATE_Z_OFFSET.
+            delta_z += config.GATE_Z_OFFSET
             log.debug(
                 "VisServo e_h=%.3f v_c=%.1f tgt_v=%.1f err=%.1fpx dist=%.2fm dz=%.3fm",
                 e_h, v_c, target_v, pixel_err, dist, delta_z,
@@ -707,10 +721,11 @@ class GateFSM:
         # moment servo had converged) — NOT vs gate.position[2] which
         # carries the reprojection bias.
         z_err = abs(drone_pos[2] - self._traverse_target[2])
-        # Crossed as soon as the drone is past the gate plane (with a tiny
-        # epsilon for sensor noise). The HLC trajectory still aims past the
-        # gate so the drone keeps non-zero velocity while transitioning.
-        crossed = (forward >= 0.05
+        # Crossed once the drone is TRAVERSE_CLEAR_DIST past the gate plane,
+        # so it fully clears the frame instead of stopping in the opening.
+        # The HLC trajectory aims further out (TRAVERSE_OVERSHOOT) so the
+        # drone still has non-zero velocity at the clear point.
+        crossed = (forward >= config.TRAVERSE_CLEAR_DIST
                    and lateral < 0.3 and z_err < 0.3)
         if crossed:
             log.info("Gate %d crossed (fwd=%.2fm lat=%.2fm)",

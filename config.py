@@ -58,6 +58,20 @@ EXPLORE_ALT: float = 1.2
 GATE_OPENING_HEIGHT: float = 0.4
 GATE_WIDTH_BOUNDS: tuple[float, float] = (0.3, 0.5)
 
+# Uncalibrated-camera vertical bias compensation.
+# The AI Deck camera is not calibrated in the vertical axis (optical-axis
+# mounting tilt + nominal CAM_CY / FOCAL_PX), so the gate is consistently
+# perceived ~0.20 m too LOW in z — both by the reprojection estimate and
+# by the visual servo (the gate looks centred in the image while the
+# drone is actually 0.20 m below the gate centre). This constant is added
+# back to every reprojected gate.z AND to the visual-servo vertical
+# correction so the drone flies through the gate centre.
+# NOTE: this is a flat metric offset, not a real calibration. The true
+# bias is a constant *pixel* offset, so the metric error scales with
+# distance; 0.20 m is correct at the typical observation range (~1 m).
+# Proper fix = calibrate CAM_CY / R_CAM2BODY. Tune this meanwhile.
+GATE_Z_OFFSET: float = 0.20
+
 # AI Deck camera (HM01B0, no calibration — nominal values)
 # Resolution and FOV come from the AI Deck 1.1 datasheet. Refine after a
 # first calibration pass on a known target.
@@ -95,10 +109,15 @@ DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
 # Distance past the gate plane that we command as the traverse target.
 # HLC's firmware min-snap reaches zero velocity AT the endpoint, so we
-# need to aim past the gate to keep non-zero velocity at the plane
-# itself. 0.30 m gives a clean fly-through at HLC_TRAVERSE_DURATION=1.2 s
-# over the ~1.1 m total trajectory from align to overshoot.
-TRAVERSE_OVERSHOOT: float = 0.30          # m past the gate plane
+# aim well past the gate to keep non-zero velocity all the way through
+# the TRAVERSE_CLEAR_DIST point (where the gate is declared crossed).
+# Must stay clearly larger than TRAVERSE_CLEAR_DIST.
+TRAVERSE_OVERSHOOT: float = 0.50          # m past the gate plane
+# Forward distance past the gate plane at which the gate counts as
+# crossed and the FSM moves on to the next gate. The drone effectively
+# stops here, so keep it large enough to fully clear the gate frame
+# instead of halting in the opening.
+TRAVERSE_CLEAR_DIST: float = 0.20         # m past the gate plane
 APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8
 CONVERGENCE_MIN_SAMPLES: int = 6
@@ -140,7 +159,7 @@ HLC_TAKEOFF_DURATION: float = 2.0
 HLC_LAND_DURATION: float = 2.5
 HLC_YAW_SCAN_DURATION: float = 3.0      # full sweep across the yaw range
 HLC_APPROACH_TICK_DURATION: float = 1.5  # per re-issued go_to during triangulation
-HLC_TRAVERSE_DURATION: float = 1.2
+HLC_TRAVERSE_DURATION: float = 1.5  # longer trajectory (bigger overshoot)
 
 # Logging
 LOG_DIR: str = "logs"
