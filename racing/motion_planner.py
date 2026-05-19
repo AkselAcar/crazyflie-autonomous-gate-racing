@@ -54,7 +54,9 @@ class MotionPlanner3D():
 
         gate_pos_df = pd.read_csv(gate_pos_csv_path)
         gate_pos = gate_pos_df[["x", "y", "z"]].values.T
-        gate_orientations = gate_pos_df["theta"].values - np.pi/2
+        gate_pos["x"] = -gate_pos["x"] - 1
+        gate_pos["y"] *= -1
+        gate_orientations = (gate_pos_df["theta"].values + np.pi) % (2*np.pi) - 3/2 * np.pi
         gate_widths = gate_pos_df["width"].values
         gate_heights = gate_pos_df["height"].values
 
