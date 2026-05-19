@@ -75,7 +75,11 @@ class RaceFSM:
 
         # Landing state
         self._land_phase: int = 0
-        self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2]
+        # Where to return for landing. Set in _do_trajectory_planning to
+        # the racing trajectory's final waypoint (above the take-off pad),
+        # so landing happens exactly where the trajectory ends. The config
+        # value is only a placeholder until then.
+        self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2].copy()
 
         # Actual flown trajectory recorded for the post-mission overlay
         # against the planned trajectory: one estimator pose plus its
@@ -93,7 +97,7 @@ class RaceFSM:
         self._race_path_end_idx: int | None = None
 
     # Public API
-    def tick(self, sd: DroneState, image: np.ndarray | None) -> bool:
+    def tick(self, sd: DroneState) -> bool:
         """Drive the FSM one step. Returns False when mission complete."""
         if self.state == self.DONE:
             return False
@@ -129,6 +133,11 @@ class RaceFSM:
         self.motion_planner = MotionPlanner3D(
             tuple(drone_pos), config.GATE_POS_CSV_PATH,
             verbose=config.MOTION_PLANNER_VERBOSE)
+        # Land where the trajectory ends — its final waypoint is above the
+        # take-off pad. Sourced from the plan (not a captured estimate) so
+        # it is immune to the estimator not having converged yet.
+        self._land_return_xy = np.asarray(
+            self.motion_planner.path_waypoints[-1][:2], dtype=float)
         # The planned trajectory's first waypoint is this exact pose, which
         # tick() already appended to _flown_path this tick — mark its index
         # so the overlay plots the flown path from the same starting point.
