@@ -4,7 +4,7 @@ Owns:
 - The radio link (Crazyradio PA → Crazyflie URI)
 - A continuous Lighthouse pose log at 100 Hz
 - A high-level commander wrapper (takeoff, go_to, land)
-- Low-level position-setpoint streaming for trajectory racing
+- Low-level full-state-setpoint streaming for trajectory racing
 
 The state dict returned by `get_state()` mirrors the keys used by the
 Webots controller as closely as possible (`x_global`, `y_global`,
@@ -358,23 +358,41 @@ class CrazyflieLink:
         self.hlc.land(height, duration)
 
     # Low-level setpoint streaming (used for trajectory racing)
-    def send_position_setpoint(
-        self, x: float, y: float, z: float, yaw: float,
-    ) -> None:
-        """Stream one absolute position setpoint (low-level commander).
+    def set_controller(self, controller: int) -> None:
+        """Select the onboard stabilizer controller (1=PID, 2=Mellinger).
 
-        Bypasses the High-Level Commander: the firmware position
-        controller tracks this exact setpoint, so the drone follows our
-        planned trajectory point-by-point instead of letting the HLC
-        rebuild its own min-snap path (which cuts corners).
+        Mellinger tracks full-state setpoints (position with velocity and
+        acceleration feedforward) far better than the PID, which ignores
+        the acceleration term. Set this before flying.
+        """
+        assert self._cf is not None
+        self._cf.param.set_value("stabilizer.controller", str(controller))
+        log.info("Stabilizer controller set to %d", controller)
+
+    def send_full_state_setpoint(self, pos, vel, acc, yaw: float) -> None:
+        """Stream one full-state setpoint (low-level commander).
+
+        Bypasses the High-Level Commander and feeds position plus
+        velocity/acceleration feedforward, so the controller anticipates
+        the moving trajectory setpoint instead of lagging it. Requires
+        the Mellinger controller (see set_controller) — the default PID
+        ignores the acceleration term.
 
         Must be streamed continuously (>2 Hz) — if the firmware setpoint
         watchdog goes ~500 ms without a packet it cuts the motors.
 
-        ``yaw`` is in radians (converted to the degrees cflib expects).
+        pos/vel/acc are world-frame 3-vectors (m, m/s, m/s²); yaw in rad.
         """
         assert self._cf is not None
-        self._cf.commander.send_position_setpoint(x, y, z, math.degrees(yaw))
+        qz = math.sin(yaw / 2.0)
+        qw = math.cos(yaw / 2.0)
+        self._cf.commander.send_full_state_setpoint(
+            [float(pos[0]), float(pos[1]), float(pos[2])],
+            [float(vel[0]), float(vel[1]), float(vel[2])],
+            [float(acc[0]), float(acc[1]), float(acc[2])],
+            [0.0, 0.0, qz, qw],   # orientation quaternion (yaw only)
+            0.0, 0.0, 0.0,        # roll/pitch/yaw rates
+        )
 
     def notify_setpoint_stop(self, remain_valid_ms: int = 200) -> None:
         """Hand control back to the High-Level Commander after streaming.

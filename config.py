@@ -157,8 +157,13 @@ PLOT_DIR: str = "camera_plots"
 GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_circle_test.csv"
 MOTION_PLANNER_VERBOSE = False
 
+# Onboard stabilizer controller for the racing run: 1=PID, 2=Mellinger.
+# Mellinger exploits the velocity/acceleration feedforward streamed via
+# send_full_state_setpoint; the PID would ignore the acceleration term.
+RACE_CONTROLLER = 2
+
 VEL_LIM = 25.0
-ACC_LIM = 250.0 
+ACC_LIM = 250.0
 PTS_PER_METER = 30.0                # Number of points per meter for trajectory
 MIN_T_F = 10.0                      # Minimum trajectory duration [s]
 TARGET_AVG_SPEED = 0.5              # Target averaged speed over trajectory [m/s]

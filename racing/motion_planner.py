@@ -18,6 +18,8 @@ class MotionPlanner3D():
 
         self.starting_point = start_pos
         self.trajectory_setpoints = None
+        self.trajectory_velocities = None
+        self.trajectory_accelerations = None
         self.path_waypoints, self.gate_pos, self.gate_orientations, self.gate_widths, self.gate_heights = self.construct_waypoints(gate_pos_csv_path, verbose=verbose)
         print(f"[INFO] Successfully loaded and constructed {len(self.path_waypoints)} gate waypoints from {gate_pos_csv_path}.")
 
@@ -101,9 +103,11 @@ class MotionPlanner3D():
 
         return np.array(waypoints), gate_pos, gate_orientations, gate_widths, gate_heights
 
-    def run_planner(self):    
+    def run_planner(self):
         poly_coeffs = self.compute_poly_coefficients()
-        self.trajectory_setpoints, self.time_setpoints = self.poly_setpoint_extraction(poly_coeffs)
+        (self.trajectory_setpoints, self.trajectory_velocities,
+         self.trajectory_accelerations,
+         self.time_setpoints) = self.poly_setpoint_extraction(poly_coeffs)
 
     def compute_poly_matrix(self, t):
         # Inputs:
@@ -266,6 +270,10 @@ class MotionPlanner3D():
             yaw_vals[:first_moving, 0] = yaw_vals[first_moving, 0]
 
         trajectory_setpoints = np.hstack((x_vals, y_vals, z_vals, yaw_vals))
+        # Velocity/acceleration setpoints, streamed as feedforward so the
+        # Mellinger controller anticipates the moving setpoint.
+        trajectory_velocities = np.hstack((v_x_vals, v_y_vals, v_z_vals))
+        trajectory_accelerations = np.hstack((a_x_vals, a_y_vals, a_z_vals))
 
         # self.plot(obs, path_waypoints, trajectory_setpoints)
             
@@ -286,7 +294,8 @@ class MotionPlanner3D():
 
         # ---------------------------------------------------------------------------------------------------- ##
 
-        return trajectory_setpoints, time_setpoints
+        return (trajectory_setpoints, trajectory_velocities,
+                trajectory_accelerations, time_setpoints)
     
     def plot(self, flown_path=None, flown_times=None):
         fig = plt.figure(figsize=(10, 8))

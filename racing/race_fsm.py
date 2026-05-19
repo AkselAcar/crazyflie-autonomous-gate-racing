@@ -3,13 +3,17 @@
 Pipeline:
     TAKEOFF → TRAJECTORY_PLANNING → RACING → LAND → DONE
 
-- TAKEOFF and LAND use the High-Level Commander (takeoff/go_to/land):
-  the firmware builds a min-snap path for those simple moves.
-- RACING streams low-level position setpoints. The motion planner's
-  min-jerk trajectory is sampled by elapsed time and each point is sent
-  with ``cf.send_position_setpoint`` so the drone tracks the planned
-  polynomial faithfully — no lookahead, no corner-cutting. On completion
-  ``cf.notify_setpoint_stop`` hands control back to the HLC for landing.
+- TAKEOFF and LAND use the High-Level Commander (takeoff/land): the
+  firmware builds a min-snap path for those simple vertical moves. The
+  racing trajectory ends above the take-off pad, so LAND just descends
+  in place — no fly-back leg.
+- RACING streams low-level full-state setpoints (position plus
+  velocity/acceleration feedforward) via ``cf.send_full_state_setpoint``.
+  The motion planner's min-jerk trajectory is sampled by elapsed time so
+  the drone tracks the planned polynomial faithfully — no lookahead, no
+  corner-cutting, and the feedforward removes the controller lag. On
+  completion ``cf.notify_setpoint_stop`` hands control back to the HLC
+  for landing.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from math import atan2
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +28,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from hardware.crazyflie_link import CrazyflieLink, DroneState
-from planning.geometry import angle_diff
 from motion_planner import MotionPlanner3D
 
 log = logging.getLogger(__name__)
@@ -46,40 +48,18 @@ class RaceFSM:
         LAND: "LAND", DONE: "DONE",
     }
 
-    # HLC re-issue thresholds (avoid spamming the radio link).
-    REISSUE_POS_THRESHOLD = 0.05   # m
-    REISSUE_YAW_THRESHOLD = 0.05   # rad
-    MIN_REISSUE_INTERVAL = 0.4     # s
-
-    # Arrival tolerances
-    ARRIVAL_POS_TOL = 0.10
-    ARRIVAL_Z_TOL = 0.08
-    ARRIVAL_YAW_TOL = 0.08
-    ARRIVAL_VEL_TOL = 0.10
-
-    # Time budget per metre / per radian for sizing HLC durations.
-    NOMINAL_SPEED = 0.5      # m/s
-    YAW_RATE = 0.6           # rad/s
-    MIN_SEG_DURATION = 0.6   # s — floor on any go_to duration
-
     def __init__(self, cf: CrazyflieLink) -> None:
         self.cf = cf
+        # Mellinger controller — needed to exploit the velocity/accel
+        # feedforward streamed during RACING (see _do_racing).
+        self.cf.set_controller(config.RACE_CONTROLLER)
         self.state: int = self.TAKEOFF
         self.current_gate: int = 0
 
-        # HLC bookkeeping
-        self._cmd_target: np.ndarray | None = None  # [x, y, z, yaw]
+        # HLC bookkeeping. _cmd_t timestamps the takeoff and land commands.
         self._cmd_t: float = 0.0
         self._takeoff_issued: bool = False
         self._land_issued: bool = False
-
-        # Landing state
-        self._land_phase: int = 0
-        # Where to return for landing. Set in _do_trajectory_planning to
-        # the racing trajectory's final waypoint (above the take-off pad),
-        # so landing happens exactly where the trajectory ends. The config
-        # value is only a placeholder until then.
-        self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2].copy()
 
         # Actual flown trajectory recorded for the post-mission overlay
         # against the planned trajectory: one estimator pose plus its
@@ -113,7 +93,7 @@ class RaceFSM:
         elif self.state == self.RACING:
             self._do_racing(sd)
         elif self.state == self.LAND:
-            self._do_land(sd, drone_pos)
+            self._do_land()
 
         return self.state != self.DONE
 
@@ -133,11 +113,6 @@ class RaceFSM:
         self.motion_planner = MotionPlanner3D(
             tuple(drone_pos), config.GATE_POS_CSV_PATH,
             verbose=config.MOTION_PLANNER_VERBOSE)
-        # Land where the trajectory ends — its final waypoint is above the
-        # take-off pad. Sourced from the plan (not a captured estimate) so
-        # it is immune to the estimator not having converged yet.
-        self._land_return_xy = np.asarray(
-            self.motion_planner.path_waypoints[-1][:2], dtype=float)
         # The planned trajectory's first waypoint is this exact pose, which
         # tick() already appended to _flown_path this tick — mark its index
         # so the overlay plots the flown path from the same starting point.
@@ -147,12 +122,13 @@ class RaceFSM:
 
     def _do_racing(self, sd: DroneState) -> None:
         traj = self.motion_planner.trajectory_setpoints
+        vel = self.motion_planner.trajectory_velocities
+        acc = self.motion_planner.trajectory_accelerations
         time_vector = self.motion_planner.time_setpoints
 
         # Index the trajectory by elapsed time and stream the setpoint
-        # for *this* instant — no lookahead. The firmware position
-        # controller tracks each point directly, so the drone follows the
-        # planned polynomial faithfully instead of chord-cutting corners.
+        # for *this* instant — no lookahead. The drone tracks the planned
+        # polynomial faithfully instead of chord-cutting corners.
         elapsed_time = time.monotonic() - self.lap_start_time
         idx = int(np.searchsorted(time_vector, elapsed_time))
 
@@ -165,60 +141,12 @@ class RaceFSM:
             return
 
         sp = traj[idx]  # [x, y, z, yaw] — yaw already faces along the path
-        self.cf.send_position_setpoint(
-            float(sp[0]), float(sp[1]), float(sp[2]), float(sp[3]))
+        # Full-state setpoint: position plus velocity/acceleration
+        # feedforward so the Mellinger controller anticipates the moving
+        # setpoint instead of lagging it.
+        self.cf.send_full_state_setpoint(
+            sp[:3], vel[idx], acc[idx], float(sp[3]))
 
-
-    # HLC helpers
-    def _reissue_needed(self, target: np.ndarray) -> bool:
-        if self._cmd_target is None:
-            return True
-        if time.monotonic() - self._cmd_t < self.MIN_REISSUE_INTERVAL:
-            return False
-        pos_moved = np.linalg.norm(target[:3] - self._cmd_target[:3])
-        yaw_moved = abs(angle_diff(target[3], self._cmd_target[3]))
-        return (pos_moved > self.REISSUE_POS_THRESHOLD
-                or yaw_moved > self.REISSUE_YAW_THRESHOLD)
-
-    def _issue_goto(self, x: float, y: float, z: float, yaw: float,
-                    duration: float | None = None,
-                    cur_pos: np.ndarray | None = None,
-                    cur_yaw: float | None = None) -> None:
-        target = np.array([x, y, z, yaw])
-        if not self._reissue_needed(target):
-            return
-        if duration is None:
-            if cur_pos is None or cur_yaw is None:
-                duration = self.MIN_SEG_DURATION
-            else:
-                dist = np.linalg.norm(target[:3] - cur_pos)
-                yaw_d = abs(angle_diff(yaw, cur_yaw))
-                duration = max(self.MIN_SEG_DURATION,
-                               dist / self.NOMINAL_SPEED,
-                               yaw_d / self.YAW_RATE)
-        self.cf.go_to(x, y, z, yaw, duration)
-        self._cmd_target = target
-        self._cmd_t = time.monotonic()
-
-    def _at_target(self, sd: DroneState, target_xy: np.ndarray | None = None,
-                   target_z: float | None = None,
-                   target_yaw: float | None = None,
-                   pos_tol: float | None = None,
-                   yaw_tol: float | None = None) -> bool:
-        pos_tol = pos_tol if pos_tol is not None else self.ARRIVAL_POS_TOL
-        yaw_tol = yaw_tol if yaw_tol is not None else self.ARRIVAL_YAW_TOL
-        if target_xy is not None:
-            if np.linalg.norm(np.array([sd.x_global, sd.y_global]) - target_xy) > pos_tol:
-                return False
-        if target_z is not None:
-            if abs(sd.z_global - target_z) > self.ARRIVAL_Z_TOL:
-                return False
-        if target_yaw is not None:
-            if abs(angle_diff(target_yaw, sd.yaw)) > yaw_tol:
-                return False
-        # Velocity check — make sure the drone has settled.
-        speed = (sd.v_x ** 2 + sd.v_y ** 2 + sd.v_z ** 2) ** 0.5
-        return speed < self.ARRIVAL_VEL_TOL * 3  # generous
 
     # TAKEOFF
     def _do_takeoff(self, sd: DroneState, drone_pos: np.ndarray) -> None:
@@ -229,48 +157,40 @@ class RaceFSM:
             self._takeoff_issued = True
             self._cmd_t = time.monotonic()
             return
-        if time.monotonic() - self._cmd_t < config.HLC_TAKEOFF_DURATION:
+        # The HLC takeoff is a fixed-duration maneuver — transition once it
+        # has run (plus a short settle margin). We deliberately do NOT gate
+        # on reaching EXPLORE_ALT exactly: the controller may leave a few
+        # cm of steady-state error, and the racing trajectory is planned
+        # from the actual post-takeoff pose anyway, so the precise altitude
+        # does not matter.
+        if time.monotonic() - self._cmd_t < config.HLC_TAKEOFF_DURATION + 0.5:
             return
-        if abs(sd.z_global - config.EXPLORE_ALT) < self.ARRIVAL_Z_TOL:
-            self._set_state(self.TRAJECTORY_PLANNING)
+        self._set_state(self.TRAJECTORY_PLANNING)
 
     # LAND
     def _init_land(self) -> None:
-        self._land_phase = 0
         self._land_issued = False
-        self._cmd_target = None
 
-    def _do_land(self, sd: DroneState, drone_pos: np.ndarray) -> None:
-        if self._land_phase == 0:
-            # Fly back to the take-off xy at current altitude.
-            ret = self._land_return_xy
-            look_yaw = atan2(ret[1] - drone_pos[1], ret[0] - drone_pos[0])
-            # If already close, skip the look-yaw to avoid jittery commands.
-            if np.linalg.norm(drone_pos[:2] - ret) < 0.2:
-                look_yaw = sd.yaw
-            self._issue_goto(ret[0], ret[1], config.EXPLORE_ALT, look_yaw,
-                             cur_pos=drone_pos, cur_yaw=sd.yaw)
-            if self._at_target(sd, target_xy=ret, target_z=config.EXPLORE_ALT,
-                               pos_tol=0.15):
-                self._land_phase = 1
-                self._cmd_target = None
-        elif self._land_phase == 1:
-            if not self._land_issued:
-                self.cf.land(0.05, config.HLC_LAND_DURATION)
-                self._land_issued = True
-                self._cmd_t = time.monotonic()
-            elif time.monotonic() - self._cmd_t >= config.HLC_LAND_DURATION + 0.5:
-                self._set_state(self.DONE)
-                # Overlay only the racing portion of the flown path so it
-                # spans the same range as the planned trajectory: from the
-                # race start pose to the last setpoint (landing excluded).
-                # Timestamps are rebased to trajectory time (0 at race
-                # start) to match the planner's own time axis.
-                i0 = self._race_path_start_idx
-                i1 = (self._race_path_end_idx
-                      if self._race_path_end_idx is not None
-                      else len(self._flown_path))
-                flown = np.array(self._flown_path[i0:i1])
-                flown_times = (np.array(self._flown_times[i0:i1])
-                               - self.lap_start_time)
-                self.motion_planner.plot(flown, flown_times)
+    def _do_land(self) -> None:
+        # The racing trajectory ends above the take-off pad, so the drone
+        # is already in place — just descend with the HLC, in place.
+        if not self._land_issued:
+            self.cf.land(0.05, config.HLC_LAND_DURATION)
+            self._land_issued = True
+            self._cmd_t = time.monotonic()
+            return
+        if time.monotonic() - self._cmd_t < config.HLC_LAND_DURATION + 0.5:
+            return
+        self._set_state(self.DONE)
+        # Overlay only the racing portion of the flown path so it spans the
+        # same range as the planned trajectory: from the race start pose to
+        # the last setpoint (landing excluded). Timestamps are rebased to
+        # trajectory time (0 at race start) to match the planner's time axis.
+        i0 = self._race_path_start_idx
+        i1 = (self._race_path_end_idx
+              if self._race_path_end_idx is not None
+              else len(self._flown_path))
+        flown = np.array(self._flown_path[i0:i1])
+        flown_times = (np.array(self._flown_times[i0:i1])
+                       - self.lap_start_time)
+        self.motion_planner.plot(flown, flown_times)
