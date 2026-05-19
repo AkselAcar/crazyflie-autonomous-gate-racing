@@ -132,6 +132,13 @@ class GateFSM:
         # re-anchoring to drone_pos[2] each tick (prevents early z commit).
         self._servo_z_setpoint: float | None = None
         self._servo_z_settled: int = 0  # consecutive frames with small z error
+        # Persistent lateral (xy) servo offset — the horizontal analogue of
+        # _servo_z_setpoint. Accumulated during APPROACH/ALIGN and applied to
+        # BOTH the align point AND the traverse target, so the traverse flies
+        # straight along the corrected gate axis instead of a diagonal through
+        # the un-corrected reprojected centre (which clipped a gate leg).
+        self._servo_xy_offset: np.ndarray | None = None
+        self._servo_xy_settled: int = 0  # consecutive frames with small xy error
 
         # Traverse state
         self._traverse_target: np.ndarray | None = None
@@ -367,6 +374,8 @@ class GateFSM:
         gate = self.gates[self.current_gate]
         self._servo_z_setpoint = float(gate.position[2]) if gate is not None else None
         self._servo_z_settled = 0
+        self._servo_xy_offset = None
+        self._servo_xy_settled = 0
 
     def _approach_align_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """Approach target = APPROACH_DIST in front of the gate, looking at it."""
@@ -606,12 +615,21 @@ class GateFSM:
                                           + 0.45 * desired_z)
             self._servo_z_setpoint = float(np.clip(
                 self._servo_z_setpoint, config.Z_BOUNDS[0], config.Z_BOUNDS[1]))
+            # Accumulate the lateral correction into a persistent offset, the
+            # same way as z, so the traverse target can reuse it.
+            if self._servo_xy_offset is None:
+                self._servo_xy_offset = servo[:2].copy()
+            else:
+                self._servo_xy_offset = (0.55 * self._servo_xy_offset
+                                         + 0.45 * servo[:2])
 
         # 4. Issue go_to with servo-corrected target (rate-limited internally).
         # xy from reprojection; z from the persistent servo setpoint (immune to
         # reprojection's z bias and to re-anchoring on every tick).
-        target_x = align_pose[0] + servo[0]
-        target_y = align_pose[1] + servo[1]
+        servo_xy = (self._servo_xy_offset if self._servo_xy_offset is not None
+                    else np.zeros(2))
+        target_x = align_pose[0] + servo_xy[0]
+        target_y = align_pose[1] + servo_xy[1]
         target_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
                     else drone_pos[2])
         self._issue_goto(target_x, target_y, target_z,
@@ -638,9 +656,11 @@ class GateFSM:
         trav_dir = compute_traversal_direction(gate.position[:2], gate.yaw)
         trav_dir_3d = np.array([trav_dir[0], trav_dir[1], 0.0])
 
-        # Thresholds for z-settle check before committing traverse altitude.
-        _Z_SETTLE_THRESH = 0.06  # m — servo correction small enough = centred
-        _Z_SETTLE_FRAMES = 3     # consecutive frames required
+        # Thresholds for the settle checks before committing the traverse.
+        _Z_SETTLE_THRESH = 0.06   # m — z servo correction small enough = centred
+        _Z_SETTLE_FRAMES = 3      # consecutive frames required
+        _XY_SETTLE_THRESH = 0.08  # m — lateral servo correction small enough
+        _XY_SETTLE_FRAMES = 3
 
         if not self._traverse_started:
             align_pos_xy = gate.position[:2] - config.APPROACH_DIST * trav_dir
@@ -675,30 +695,48 @@ class GateFSM:
                             self._servo_z_settled += 1
                         else:
                             self._servo_z_settled = 0
+                        # Lateral correction — accumulate + settle, like z.
+                        if self._servo_xy_offset is None:
+                            self._servo_xy_offset = servo[:2].copy()
+                        else:
+                            self._servo_xy_offset = (0.55 * self._servo_xy_offset
+                                                     + 0.45 * servo[:2])
+                        if float(np.linalg.norm(servo[:2])) < _XY_SETTLE_THRESH:
+                            self._servo_xy_settled += 1
+                        else:
+                            self._servo_xy_settled = 0
 
-            target_x = align_pos_xy[0] + servo[0]
-            target_y = align_pos_xy[1] + servo[1]
+            servo_xy = (self._servo_xy_offset if self._servo_xy_offset is not None
+                        else np.zeros(2))
+            target_x = align_pos_xy[0] + servo_xy[0]
+            target_y = align_pos_xy[1] + servo_xy[1]
             target_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
                         else drone_pos[2])
             self._issue_goto(target_x, target_y, target_z,
                              look_yaw, cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-            # Commit traverse altitude only after the z servo has settled
-            # (small correction = drone is vertically centred on the gate).
+            # Commit only after BOTH the z and the lateral servo have settled
+            # (small correction = drone is centred on the gate axis).
             z_settled = self._servo_z_settled >= _Z_SETTLE_FRAMES
+            xy_settled = self._servo_xy_settled >= _XY_SETTLE_FRAMES
             if (self._at_target(sd, target_xy=np.array([target_x, target_y]),
                                 target_z=target_z,
                                 target_yaw=look_yaw, pos_tol=0.10)
-                    and z_settled):
+                    and z_settled and xy_settled):
                 commit_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
                             else drone_pos[2])
                 # Commanded target = TRAVERSE_OVERSHOOT past the gate plane,
                 # in the traversal direction. Anchored on gate.position (not
-                # drone_pos) so the drone actually flies through the gate
-                # instead of stopping short of it.
+                # drone_pos) so the drone actually flies through the gate.
+                # The SAME lateral servo offset used for the align point is
+                # applied here so the traverse flies straight along the
+                # corrected gate axis instead of a diagonal through the
+                # un-corrected reprojected centre (which clipped a leg).
                 self._traverse_target = np.array([
-                    gate.position[0] + config.TRAVERSE_OVERSHOOT * trav_dir[0],
-                    gate.position[1] + config.TRAVERSE_OVERSHOOT * trav_dir[1],
+                    gate.position[0] + config.TRAVERSE_OVERSHOOT * trav_dir[0]
+                    + servo_xy[0],
+                    gate.position[1] + config.TRAVERSE_OVERSHOOT * trav_dir[1]
+                    + servo_xy[1],
                     commit_z,
                 ])
                 self._traverse_started = True
@@ -714,9 +752,14 @@ class GateFSM:
                          duration=config.HLC_TRAVERSE_DURATION,
                          cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-        forward = float(np.dot(drone_pos[:2] - gate.position[:2], trav_dir))
+        # Measure progress against the servo-corrected gate centre (the same
+        # one the traverse target was built from), not the raw reprojection.
+        center_xy = gate.position[:2]
+        if self._servo_xy_offset is not None:
+            center_xy = center_xy + self._servo_xy_offset
+        forward = float(np.dot(drone_pos[:2] - center_xy, trav_dir))
         lateral = float(np.linalg.norm(
-            (drone_pos[:2] - gate.position[:2]) - forward * trav_dir))
+            (drone_pos[:2] - center_xy) - forward * trav_dir))
         # z_err vs the locked traverse z (set to the drone's z at the
         # moment servo had converged) — NOT vs gate.position[2] which
         # carries the reprojection bias.
