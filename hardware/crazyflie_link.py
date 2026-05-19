@@ -31,6 +31,14 @@ import config
 log = logging.getLogger(__name__)
 
 
+# Lighthouse mission/examiner frame conversion lives in config so the
+# racing CSV loader can reuse the exact same transform. See the
+# "Lighthouse frame compatibility" block in config.py.
+_conv_pos = config.frame_conv_pos
+_conv_vec = config.frame_conv_vec
+_conv_yaw = config.frame_conv_yaw
+
+
 @dataclass
 class DroneState:
     """Latest Lighthouse + IMU snapshot."""
@@ -368,20 +376,34 @@ class CrazyflieLink:
 
     def _on_pose_log(self, _ts: int, data: dict[str, Any], _logconf: Any) -> None:
         t = self._stamp()
+        # Convert the examiner-frame pose reported by the firmware into the
+        # mission frame the rest of the codebase uses. roll/pitch are body
+        # angles — unaffected by a world-frame yaw redefinition.
+        x, y, z = _conv_pos(
+            data["stateEstimate.x"],
+            data["stateEstimate.y"],
+            data["stateEstimate.z"],
+        )
         with self._state_lock:
             self._state.t = t
-            self._state.x_global = data["stateEstimate.x"]
-            self._state.y_global = data["stateEstimate.y"]
-            self._state.z_global = data["stateEstimate.z"]
+            self._state.x_global = x
+            self._state.y_global = y
+            self._state.z_global = z
             self._state.roll = math.radians(data["stateEstimate.roll"])
             self._state.pitch = math.radians(data["stateEstimate.pitch"])
-            self._state.yaw = math.radians(data["stateEstimate.yaw"])
+            self._state.yaw = _conv_yaw(math.radians(data["stateEstimate.yaw"]))
 
     def _on_vel_log(self, _ts: int, data: dict[str, Any], _logconf: Any) -> None:
+        # Velocity is a free vector — rotation only, no origin shift.
+        v_x, v_y, v_z = _conv_vec(
+            data["stateEstimate.vx"],
+            data["stateEstimate.vy"],
+            data["stateEstimate.vz"],
+        )
         with self._state_lock:
-            self._state.v_x = data["stateEstimate.vx"]
-            self._state.v_y = data["stateEstimate.vy"]
-            self._state.v_z = data["stateEstimate.vz"]
+            self._state.v_x = v_x
+            self._state.v_y = v_y
+            self._state.v_z = v_z
 
     # Public API
     def get_state(self) -> DroneState:
@@ -415,7 +437,16 @@ class CrazyflieLink:
 
         The firmware generates a smooth polynomial trajectory between the
         current state and the target — no Python-side smoother needed.
+
+        The target is given in the mission frame and converted to the
+        examiner frame here. A relative go_to takes a displacement (free
+        vector → rotation only) and a yaw *delta* (frame-invariant).
         """
+        if relative:
+            x, y, z = _conv_vec(x, y, z)
+        else:
+            x, y, z = _conv_pos(x, y, z)
+            yaw = _conv_yaw(yaw)
         self.hlc.go_to(x, y, z, yaw, duration, relative=relative)
 
     def land(
@@ -450,9 +481,14 @@ class CrazyflieLink:
         Must be streamed continuously (>2 Hz) — if the firmware setpoint
         watchdog goes ~500 ms without a packet it cuts the motors.
 
-        pos/vel/acc are world-frame 3-vectors (m, m/s, m/s²); yaw in rad.
+        pos/vel/acc are mission-frame 3-vectors (m, m/s, m/s²); yaw in rad.
+        They are converted to the examiner frame before streaming.
         """
         assert self._cf is not None
+        pos = _conv_pos(float(pos[0]), float(pos[1]), float(pos[2]))
+        vel = _conv_vec(float(vel[0]), float(vel[1]), float(vel[2]))
+        acc = _conv_vec(float(acc[0]), float(acc[1]), float(acc[2]))
+        yaw = _conv_yaw(yaw)
         qz = math.sin(yaw / 2.0)
         qw = math.cos(yaw / 2.0)
         self._cf.commander.send_full_state_setpoint(
