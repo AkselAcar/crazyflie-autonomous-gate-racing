@@ -82,6 +82,7 @@ class CrazyflieLink:
             self._cf = self._scf.cf
             self._configure_estimator()
             self._start_logging()
+            self._arm()
         except Exception:
             # Connection died mid-setup. Tear down so we don't leave the
             # radio link or background threads hanging — otherwise the
@@ -290,6 +291,74 @@ class CrazyflieLink:
         self._cf.log.add_config(vel_cfg)
         vel_cfg.data_received_cb.add_callback(self._on_vel_log)
         vel_cfg.start()
+
+    def _arm(self, retries: int = 6, delay: float = 0.5) -> None:
+        """Arm the drone so flight commands are accepted.
+
+        Recent Crazyflie firmware requires an explicit arming request
+        before the supervisor will let the motors spin. Without this,
+        ``high_level_commander.takeoff`` (and any setpoint) is silently
+        ignored — no error, the drone just stays on the ground.
+
+        The request can also be *refused* by the supervisor
+        (``Arm response: success=False``) when the drone is not in an
+        armable state. Rather than continuing into a no-op takeoff, we
+        retry a few times and, on persistent failure, decode the
+        supervisor bitfield and raise so the cause is visible.
+        """
+        assert self._cf is not None
+        sup = self._cf.supervisor
+        recovery_tried = False
+
+        for attempt in range(1, retries + 1):
+            states = sup.read_state_list()
+            # The arming request can return success=False yet the drone may
+            # still arm itself (auto-arm). Trust the bitfield, not the reply.
+            if "Is armed" in states:
+                log.info("Drone armed (supervisor: %s)", states)
+                return
+
+            # A drone left in 'locked'/'crashed' by a previous flight session
+            # can never be armed — 'Can be armed' stays 0. Try the supervisor's
+            # soft crash-recovery once before giving up and asking for a
+            # physical power-cycle.
+            if (("Is locked" in states or "Is crashed" in states)
+                    and not recovery_tried):
+                log.warning("Supervisor locked/crashed (%s) — sending "
+                            "crash-recovery request", states)
+                sup.send_crash_recovery_request()
+                recovery_tried = True
+                time.sleep(delay)
+                continue
+
+            log.info("Arming request %d/%d — supervisor state: %s",
+                     attempt, retries, states)
+            sup.send_arming_request(True)
+            time.sleep(delay)
+
+        states = sup.read_state_list()
+        if "Is armed" in states:
+            log.info("Drone armed (supervisor: %s)", states)
+            return
+
+        # Still not armed — explain the most likely cause from the bitfield.
+        if "Is tumbled" in states:
+            hint = "drone is tumbled — place it level on the take-off pad"
+        elif "Is locked" in states or "Is crashed" in states:
+            hint = ("drone is locked/crashed and soft crash-recovery did not "
+                    "clear it — POWER-CYCLE the drone, then run main.py "
+                    "directly (do not fly the FPV example in between: ending "
+                    "a flight session re-locks the supervisor)")
+        elif "Can be armed" not in states:
+            hint = ("supervisor reports the drone is NOT armable — most "
+                    "likely the battery is too low; charge or swap it")
+        else:
+            hint = ("supervisor says 'Can be armed' but the request was "
+                    "refused — retry, or power-cycle the drone")
+        raise RuntimeError(
+            f"Could not arm the Crazyflie after {retries} attempts "
+            f"(supervisor state: {states}). Likely cause: {hint}."
+        )
 
     def _stamp(self) -> float:
         now = time.monotonic()
