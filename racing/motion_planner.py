@@ -53,31 +53,8 @@ class MotionPlanner3D():
         offset_dist = config.ADD_POINT_DIST_FROM_GATE
 
         gate_pos_df = pd.read_csv(gate_pos_csv_path)
-
-        # The examiner provides the gate CSV in the examiner Lighthouse
-        # frame. Convert positions and orientations into the mission frame
-        # the planner and the rest of the code use, so the trajectory is
-        # planned consistently with the (mission-frame) drone state. See
-        # the "Lighthouse frame compatibility" block in config.py.
-        # frame_conv_pos is element-wise safe on numpy arrays.
-        gx, gy, gz = config.frame_conv_pos(
-            gate_pos_df["x"].values,
-            gate_pos_df["y"].values,
-            gate_pos_df["z"].values,
-        )
-        gate_pos = np.vstack([gx, gy, gz])
-        # theta in the examiner CSV is measured from the examiner -x axis
-        # (not the usual +x). The mission frame's +x axis IS the examiner
-        # -x axis (the 180° rotation about z), so that "-x-referenced"
-        # examiner angle already equals the standard mission-frame heading
-        # (from +x): the +pi for the -x reference and the +pi for the
-        # frame rotation cancel. theta is therefore used as-is (only
-        # wrapped to [-pi, pi]); the planner's -pi/2 offset is applied after.
-        gate_theta = np.arctan2(
-            np.sin(gate_pos_df["theta"].values),
-            np.cos(gate_pos_df["theta"].values),
-        )
-        gate_orientations = gate_theta - np.pi/2
+        gate_pos = gate_pos_df[["x", "y", "z"]].values.T
+        gate_orientations = gate_pos_df["theta"].values - np.pi/2
         gate_widths = gate_pos_df["width"].values
         gate_heights = gate_pos_df["height"].values
 

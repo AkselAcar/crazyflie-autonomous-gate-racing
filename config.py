@@ -8,7 +8,7 @@ principle target sim or hardware just by swapping this file).
 
 from __future__ import annotations
 
-from math import atan2, cos, pi, sin, tan
+from math import pi, tan
 
 import numpy as np
 
@@ -36,37 +36,6 @@ SEGMENT_ANGULAR_SIZE: float = pi / NUM_SEGMENTS  # = pi/6
 # direction -x → offset was pi. If the Lighthouse frame is ever
 # redefined, the only constant to change is this one.
 SECTOR_ANGLE_OFFSET: float = 0.0
-
-# --- Lighthouse frame compatibility -------------------------------------
-# Our code, this config and the racing gate CSV are written in the frame
-# WE calibrated ("mission frame"). The examiner calibrates the Lighthouse
-# differently: the new origin sits at the mission-frame point
-# (LH_ORIGIN_SHIFT_X, 0, 0), with the x and y axes rotated 180° about z
-# (z unchanged). The drone reports state / accepts commands in the
-# examiner frame, and the examiner-provided gate CSV is in the examiner
-# frame too — so we convert at those boundaries only (see
-# hardware/crazyflie_link.py and racing/motion_planner.py). The FSM,
-# geometry and the rest of this config stay entirely in the mission frame.
-#
-# The transform is an involution (1-(1-x)=x, yaw+2pi=yaw), so the same
-# functions map both ways (examiner <-> mission).
-LH_ORIGIN_SHIFT_X: float = 1.0
-
-
-def frame_conv_pos(x: float, y: float, z: float) -> tuple[float, float, float]:
-    """Convert a position (point): origin shift + 180° rotation about z."""
-    return (LH_ORIGIN_SHIFT_X - x, -y, z)
-
-
-def frame_conv_vec(x: float, y: float, z: float) -> tuple[float, float, float]:
-    """Convert a free vector (velocity / accel / relative offset): rotation only."""
-    return (-x, -y, z)
-
-
-def frame_conv_yaw(yaw: float) -> float:
-    """Convert a yaw heading and wrap to [-pi, pi]."""
-    return atan2(sin(yaw + pi), cos(yaw + pi))
-
 
 # Map bounds (used for sanity checks on planned waypoints)
 X_BOUNDS: tuple[float, float] = (-2.0, 2.0)
