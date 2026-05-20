@@ -144,11 +144,12 @@ class GateFSM:
         self._traverse_target: np.ndarray | None = None
         self._traverse_started: bool = False
 
-        # Fallback scan state
-        self._fallback_inner_pos: np.ndarray | None = None
-        self._fallback_outer_pos: np.ndarray | None = None
-        self._fallback_look_target: np.ndarray | None = None
-        self._fallback_phase: int = 0
+        # Fallback scan state — discrete yaw_scans at 3 viewpoints on the
+        # radial at ang_hi of the previous sector. See _init_fallback_scan.
+        self._fallback_positions: list[np.ndarray] = []
+        self._fallback_pos_idx: int = 0
+        self._fallback_substate: str = "MOVING"  # "MOVING" | "SCANNING"
+        self._fallback_look_yaw: float | None = None  # locked during MOVING
 
         # Landing state. _land_return_xy is set from the resting pose at
         # take-off (see _do_takeoff), so the drone lands where it took off.
@@ -285,9 +286,22 @@ class GateFSM:
         return max(self.SCAN_MIN_DURATION,
                    abs(angle_diff(target_yaw, current_yaw)) / self.SCAN_YAW_RATE)
 
-    def _do_yaw_scan(self, sd: DroneState, image: np.ndarray | None,
-                     drone_pos: np.ndarray) -> None:
-        # Run the detector regardless of phase.
+    def _yaw_scan_step(self, sd: DroneState, image: np.ndarray | None,
+                       drone_pos: np.ndarray) -> str:
+        """One tick of the yaw-sweep search.
+
+        Hovers at ``_scan_anchor_xy`` and rotates between
+        ``_scan_yaw_target`` and ``_scan_second_target`` while running
+        the detector on every frame. Used by both the regular YAW_SCAN
+        state and the FALLBACK_SCAN sub-state, so transitions stay in
+        the caller and this helper only reports progress.
+
+        Returns:
+            ``"running"``       — still sweeping, keep ticking.
+            ``"found"``         — sweep complete, a valid detection is
+                                  stored in ``_scan_best_detection``.
+            ``"no_detection"``  — sweep complete with nothing detected.
+        """
         if image is not None:
             self._try_detect_gate_during_scan(image, drone_pos,
                                               sd.roll, sd.pitch, sd.yaw)
@@ -302,33 +316,40 @@ class GateFSM:
                              cur_pos=drone_pos, cur_yaw=sd.yaw)
             if self._at_target(sd, target_yaw=self._scan_yaw_target):
                 self._scan_phase = 1
-        elif self._scan_phase == 1:
+            return "running"
+        if self._scan_phase == 1:
             duration = self._scan_duration(sd.yaw, self._scan_second_target)
             self._issue_goto(anchor[0], anchor[1], z, self._scan_second_target,
                              duration=duration,
                              cur_pos=drone_pos, cur_yaw=sd.yaw)
             if self._at_target(sd, target_yaw=self._scan_second_target):
                 self._scan_phase = 2
+            return "running"
+        return "found" if self._scan_best_detection is not None else "no_detection"
+
+    def _do_yaw_scan(self, sd: DroneState, image: np.ndarray | None,
+                     drone_pos: np.ndarray) -> None:
+        result = self._yaw_scan_step(sd, image, drone_pos)
+        if result == "running":
+            return
+        if result == "found":
+            p = self._scan_best_detection
+            self.gates[self.current_gate] = GateEstimate(
+                position=np.array([p[0], p[1], p[2]]),
+                yaw=p[3], width=p[4],
+            )
+            log.info("Gate %d found at %s yaw=%.2f w=%.2f",
+                     self.current_gate,
+                     np.round(self.gates[self.current_gate].position, 2),
+                     self.gates[self.current_gate].yaw,
+                     self.gates[self.current_gate].width)
+            self._init_approach()
+            self._set_state(self.APPROACH)
         else:
-            # Scan complete — pick best detection or fallback.
-            if self._scan_best_detection is not None:
-                p = self._scan_best_detection
-                self.gates[self.current_gate] = GateEstimate(
-                    position=np.array([p[0], p[1], p[2]]),
-                    yaw=p[3], width=p[4],
-                )
-                log.info("Gate %d found at %s yaw=%.2f w=%.2f",
-                         self.current_gate,
-                         np.round(self.gates[self.current_gate].position, 2),
-                         self.gates[self.current_gate].yaw,
-                         self.gates[self.current_gate].width)
-                self._init_approach()
-                self._set_state(self.APPROACH)
-            else:
-                log.warning("No detection during yaw scan for gate %d",
-                            self.current_gate)
-                self._init_fallback_scan(self.current_gate)
-                self._set_state(self.FALLBACK_SCAN)
+            log.warning("No detection during yaw scan for gate %d",
+                        self.current_gate)
+            self._init_fallback_scan(self.current_gate)
+            self._set_state(self.FALLBACK_SCAN)
 
     def _try_detect_gate_during_scan(self, image: np.ndarray,
                                      drone_pos: np.ndarray,
@@ -788,67 +809,102 @@ class GateFSM:
 
     # FALLBACK SCAN
     def _init_fallback_scan(self, gate_idx: int) -> None:
-        seg = gate_idx + 1
-        boundary_angle = angular_bounds_for_segment(seg)[0]
-        self._fallback_inner_pos = np.array([
-            config.CIRCLE_CENTRE[0] + config.INNER_RADIUS * cos(boundary_angle),
-            config.CIRCLE_CENTRE[1] + config.INNER_RADIUS * sin(boundary_angle),
-        ])
-        self._fallback_outer_pos = np.array([
-            config.CIRCLE_CENTRE[0] + config.OUTER_RADIUS * cos(boundary_angle),
-            config.CIRCLE_CENTRE[1] + config.OUTER_RADIUS * sin(boundary_angle),
-        ])
-        self._fallback_look_target = gate_search_center(gate_idx)
-        self._fallback_phase = 0
-        self._scan_best_detection = None
-        self._scan_best_cost = float("inf")
+        """Set up 3 stationary viewpoints, ordered OUTER → MID → INNER.
+
+        Viewpoints sit on the radial at ``ang_hi`` of the PREVIOUS sector
+        (= ``angular_bounds_for_segment(gate_idx)[1]``), NOT on
+        ``ang_lo`` of the gate's own sector. The drone is then further
+        from the gate by the full inter-sector gap, so a gate near the
+        CW edge of its sector still fits inside the camera FOV during
+        the yaw scan — at ``ang_lo`` of the gate's own sector the drone
+        sits right next to such a gate and it overflows the frame.
+
+        Each viewpoint runs a full stationary yaw_scan (see
+        ``_yaw_scan_step``). If all 3 fail the gate is skipped (see
+        ``_do_fallback_scan``).
+        """
+        boundary_angle = angular_bounds_for_segment(gate_idx)[1]
+        radii = (
+            config.OUTER_RADIUS,
+            0.5 * (config.OUTER_RADIUS + config.INNER_RADIUS),
+            config.INNER_RADIUS,
+        )
+        self._fallback_positions = [
+            np.array([
+                config.CIRCLE_CENTRE[0] + r * cos(boundary_angle),
+                config.CIRCLE_CENTRE[1] + r * sin(boundary_angle),
+            ])
+            for r in radii
+        ]
+        self._fallback_pos_idx = 0
+        self._fallback_substate = "MOVING"
+        self._fallback_look_yaw = None
         self._cmd_target = None
 
     def _do_fallback_scan(self, sd: DroneState, image: np.ndarray | None,
                           drone_pos: np.ndarray) -> None:
-        if image is not None:
-            self._try_detect_gate_during_scan(image, drone_pos,
-                                              sd.roll, sd.pitch, sd.yaw)
-
-        gate = self.gates[self.current_gate]
-        target_z = gate.position[2] if gate is not None else config.EXPLORE_ALT
-
-        look = self._fallback_look_target
-        assert look is not None
-        look_yaw = atan2(look[1] - drone_pos[1], look[0] - drone_pos[0])
-
-        if self._fallback_phase == 0:
-            tgt = self._fallback_inner_pos
-            assert tgt is not None
-            self._issue_goto(tgt[0], tgt[1], target_z, look_yaw,
+        # Sub-FSM: MOVING (fly to the viewpoint) → SCANNING (stationary
+        # yaw sweep) → either commit the detection or step to the next
+        # viewpoint, with skip-the-gate as the final fallback.
+        if self._fallback_substate == "MOVING":
+            tgt = self._fallback_positions[self._fallback_pos_idx]
+            # Lock the look yaw on entry. The old fallback recomputed it
+            # from drone_pos every tick, which made it swing wildly as the
+            # drone passed close to the look target. Computing it once
+            # from the TARGET position pins it for the whole move.
+            if self._fallback_look_yaw is None:
+                gate_center = gate_search_center(self.current_gate)
+                self._fallback_look_yaw = atan2(
+                    gate_center[1] - tgt[1], gate_center[0] - tgt[0])
+            self._issue_goto(tgt[0], tgt[1], config.EXPLORE_ALT,
+                             self._fallback_look_yaw,
                              cur_pos=drone_pos, cur_yaw=sd.yaw)
-            if self._at_target(sd, target_xy=tgt, target_z=target_z, pos_tol=0.15):
-                self._fallback_phase = 1
-                self._cmd_target = None
-        elif self._fallback_phase == 1:
-            tgt = self._fallback_outer_pos
-            assert tgt is not None
-            self._issue_goto(tgt[0], tgt[1], target_z, look_yaw,
-                             cur_pos=drone_pos, cur_yaw=sd.yaw)
-            if self._at_target(sd, target_xy=tgt, target_z=target_z, pos_tol=0.15):
-                self._fallback_phase = 2
-        else:
-            if self._scan_best_detection is not None:
-                p = self._scan_best_detection
-                self.gates[self.current_gate] = GateEstimate(
-                    position=np.array([p[0], p[1], p[2]]),
-                    yaw=p[3], width=p[4],
-                )
-                log.info("Gate %d recovered during fallback at %s",
-                         self.current_gate,
-                         np.round(self.gates[self.current_gate].position, 2))
-                self._init_approach()
-                self._set_state(self.APPROACH)
+            if self._at_target(sd, target_xy=tgt,
+                               target_z=config.EXPLORE_ALT,
+                               target_yaw=self._fallback_look_yaw,
+                               pos_tol=0.15):
+                self._init_yaw_scan(self.current_gate, drone_pos, sd.yaw)
+                self._fallback_substate = "SCANNING"
+            return
+
+        # SCANNING
+        result = self._yaw_scan_step(sd, image, drone_pos)
+        if result == "running":
+            return
+        if result == "found":
+            p = self._scan_best_detection
+            self.gates[self.current_gate] = GateEstimate(
+                position=np.array([p[0], p[1], p[2]]),
+                yaw=p[3], width=p[4],
+            )
+            log.info("Gate %d recovered during fallback at viewpoint %d (%s)",
+                     self.current_gate, self._fallback_pos_idx,
+                     np.round(self.gates[self.current_gate].position, 2))
+            self._init_approach()
+            self._set_state(self.APPROACH)
+            return
+
+        # No detection at this viewpoint — step to the next, or skip the gate.
+        self._fallback_pos_idx += 1
+        if self._fallback_pos_idx >= len(self._fallback_positions):
+            log.warning("Fallback failed for gate %d at all %d viewpoints — "
+                        "skipping gate", self.current_gate,
+                        len(self._fallback_positions))
+            self.current_gate += 1
+            if self.current_gate >= config.NUM_GATES:
+                log.info("All %d gates processed — initiating LAND",
+                         config.NUM_GATES)
+                self._init_land(drone_pos, sd.yaw)
+                self._set_state(self.LAND)
             else:
-                log.warning("Fallback failed for gate %d, retrying yaw scan",
-                            self.current_gate)
                 self._init_yaw_scan(self.current_gate, drone_pos, sd.yaw)
                 self._set_state(self.YAW_SCAN)
+            return
+
+        # Next viewpoint: re-enter MOVING with a fresh look_yaw.
+        self._fallback_substate = "MOVING"
+        self._fallback_look_yaw = None
+        self._cmd_target = None
 
     # LAND
     def _init_land(self, drone_pos: np.ndarray, drone_yaw: float) -> None:
