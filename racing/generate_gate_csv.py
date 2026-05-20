@@ -23,7 +23,10 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 
-STARTING_POINT = config.STARTING_POINT
+# Reference take-off pad position used only for the visualization in
+# plot_gates() (the drone's actual take-off pose is read from the
+# Lighthouse at run time, see RaceFSM._do_trajectory_planning).
+STARTING_POINT = np.array([1.2, 0.0, 0.05])
 
 # ============================================================================
 # GLOBAL BOUNDS AND PARAMETERS

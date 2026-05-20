@@ -32,7 +32,7 @@ def angular_bounds_for_segment(seg_idx: int) -> tuple[float, float]:
     """Sector ``seg_idx`` lower/upper angular bounds in world frame.
 
     The shift ``config.SECTOR_ANGLE_OFFSET`` aligns sector 0 (the take-off
-    sector) with the direction of TAKE_OFF_POS — change it (not this
+    sector) with the direction of the take-off pad — change it (not this
     function) when the Lighthouse frame is redefined.
     """
     lo = (2 * seg_idx - 0.5) * config.SEGMENT_ANGULAR_SIZE

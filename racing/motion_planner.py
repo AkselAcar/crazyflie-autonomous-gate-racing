@@ -14,7 +14,7 @@ import config
 class MotionPlanner3D():
     
     # def __init__(self, start, obstacles, bounds, grid_size, goal, gate_widths):
-    def __init__(self, start_pos=config.STARTING_POINT, gate_pos_csv_path="./gate_pos_csv/gates_info.csv", verbose=False):
+    def __init__(self, start_pos, gate_pos_csv_path="./gate_pos_csv/gates_info.csv", verbose=False):
 
         self.starting_point = start_pos
         self.trajectory_setpoints = None

@@ -150,9 +150,10 @@ class GateFSM:
         self._fallback_look_target: np.ndarray | None = None
         self._fallback_phase: int = 0
 
-        # Landing state
+        # Landing state. _land_return_xy is set from the resting pose at
+        # take-off (see _do_takeoff), so the drone lands where it took off.
         self._land_phase: int = 0
-        self._land_return_xy: np.ndarray = config.TAKE_OFF_POS[:2]
+        self._land_return_xy: np.ndarray = np.zeros(2)
 
     # Public API
     def tick(self, sd: DroneState, image: np.ndarray | None) -> bool:
@@ -241,6 +242,7 @@ class GateFSM:
         if not self._takeoff_issued:
             log.info("Resting pose: x=%.2f y=%.2f z=%.2f yaw=%.2f",
                      sd.x_global, sd.y_global, sd.z_global, sd.yaw)
+            self._land_return_xy = np.array([sd.x_global, sd.y_global])
             self.cf.takeoff(config.EXPLORE_ALT, config.HLC_TAKEOFF_DURATION)
             self._takeoff_issued = True
             self._cmd_t = time.monotonic()
