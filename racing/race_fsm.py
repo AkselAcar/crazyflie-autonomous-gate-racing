@@ -121,6 +121,8 @@ class RaceFSM:
         # tick() already appended to _flown_path this tick — mark its index
         # so the overlay plots the flown path from the same starting point.
         self._race_path_start_idx = max(0, len(self._flown_path) - 1)
+        log.info("Planned trajectory duration: %.2f s",
+                 float(self.motion_planner.time_setpoints[-1]))
         self.lap_start_time = time.monotonic()
         self._set_state(self.RACING)
 
@@ -138,6 +140,10 @@ class RaceFSM:
 
         if idx >= len(traj):
             # Trajectory complete → hand control back to the HLC and land.
+            actual = time.monotonic() - self.lap_start_time
+            expected = float(time_vector[-1])
+            log.info("Race finished — actual=%.2f s | expected=%.2f s | "
+                     "delta=%+.2f s", actual, expected, actual - expected)
             self.cf.notify_setpoint_stop()
             self._race_path_end_idx = len(self._flown_path)
             self._init_land()
