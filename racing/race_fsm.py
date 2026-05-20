@@ -53,6 +53,10 @@ class RaceFSM:
         # Mellinger controller — needed to exploit the velocity/accel
         # feedforward streamed during RACING (see _do_racing).
         self.cf.set_controller(config.RACE_CONTROLLER)
+        # Override the Mellinger's vehicle mass to compensate the constant
+        # z-bias observed at default settings. Volatile param — must be
+        # set every session (see CrazyflieLink.set_mellinger_mass).
+        self.cf.set_mellinger_mass(config.RACE_DRONE_MASS)
         self.state: int = self.TAKEOFF
         self.current_gate: int = 0
 

@@ -438,6 +438,21 @@ class CrazyflieLink:
         self._cf.param.set_value("stabilizer.controller", str(controller))
         log.info("Stabilizer controller set to %d", controller)
 
+    def set_mellinger_mass(self, mass_kg: float) -> None:
+        """Override the Mellinger controller's vehicle mass parameter.
+
+        The Mellinger uses this value for the nominal gravity-compensation
+        thrust term. A mismatch with the real drone mass causes a constant
+        z-offset in steady-state hover/cruise — the parameter has to be
+        tuned empirically (see config.RACE_DRONE_MASS comment).
+
+        Volatile: resets to firmware default at next power-on, so call
+        this every session before flying.
+        """
+        assert self._cf is not None
+        self._cf.param.set_value("ctrlMel.mass", str(mass_kg))
+        log.info("Mellinger mass set to %.4f kg", mass_kg)
+
     def send_full_state_setpoint(self, pos, vel, acc, yaw: float) -> None:
         """Stream one full-state setpoint (low-level commander).
 

@@ -181,6 +181,17 @@ MOTION_PLANNER_VERBOSE = False
 # send_full_state_setpoint; the PID would ignore the acceleration term.
 RACE_CONTROLLER = 2
 
+# Drone mass (kg) pushed to the Mellinger controller as ctrlMel/mass.
+# The Mellinger uses this to compute the nominal gravity-compensation
+# thrust (T = m*(g + a_z)). If the value is too low w.r.t. the real
+# system, the drone holds altitude a few cm below the setpoint in
+# steady-state. Tune empirically: fly a level trajectory, look at the
+# constant z-offset in the planner overlay, and bump this value up
+# (drone too low) or down (drone too high) until the bias disappears.
+# Firmware default is ~0.032 kg; a CF2.1 with battery + Lighthouse deck
+# is typically slightly heavier.
+RACE_DRONE_MASS = 0.042
+
 VEL_LIM = 25.0
 ACC_LIM = 250.0
 PTS_PER_METER = 30.0                # Number of points per meter for trajectory
