@@ -110,7 +110,7 @@ APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
 # aim well past the gate to keep non-zero velocity all the way through
 # the TRAVERSE_CLEAR_DIST point (where the gate is declared crossed).
 # Must stay clearly larger than TRAVERSE_CLEAR_DIST.
-TRAVERSE_OVERSHOOT: float = 0.50          # m past the gate plane
+TRAVERSE_OVERSHOOT: float = 0.30          # m past the gate plane
 # Forward distance past the gate plane at which the gate counts as
 # crossed and the FSM moves on to the next gate. The drone effectively
 # stops here, so keep it large enough to fully clear the gate frame
@@ -141,12 +141,12 @@ REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
 #
 # Start with small gains and increase until the drone centres reliably
 # without oscillating.  Max correction is clamped to VISUAL_SERVO_MAX_OFFSET.
-VISUAL_SERVO_K_H: float = 0.4        # m per unit relative lateral edge imbalance
+VISUAL_SERVO_K_H: float = 1.0        # m per unit relative lateral edge imbalance
 # K_V is now a dimensionless feedback gain on the metric vertical error:
 #   Δz = −K_V × (pixel_err / FOCAL_PX) × dist_to_gate   [metres]
 # Unlike the old edge-asymmetry gain this is pitch-compensated and
 # distance-aware. Start at 1.0 and tune up if the drone under-corrects.
-VISUAL_SERVO_K_V: float = 1.0
+VISUAL_SERVO_K_V: float = 1.5
 # Fallback gain (edge asymmetry) used only when the gate is very close
 # (p_cam[2] < 0.1 m) — same unit as the old K_V (m / dimensionless).
 VISUAL_SERVO_K_V_FALLBACK: float = 0.5
