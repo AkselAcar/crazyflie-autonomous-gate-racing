@@ -53,10 +53,18 @@ class MotionPlanner3D():
         offset_dist = config.ADD_POINT_DIST_FROM_GATE
 
         gate_pos_df = pd.read_csv(gate_pos_csv_path)
+
+        # External CSV frame -> drone frame: origin at (1, 0, 0) in drone
+        # frame, xy plane rotated 180° around z. The CSV yaw is measured
+        # from -x_csv which coincides with +x_drone, and the rotation
+        # preserves CCW sense around z, so the theta value transfers
+        # as-is — only positions need transforming.
+        gate_pos_df["x"] = 1.0 - gate_pos_df["x"]
+        gate_pos_df["y"] = -gate_pos_df["y"]
+
         gate_pos = gate_pos_df[["x", "y", "z"]].values.T
-        gate_pos["x"] = -gate_pos["x"] - 1
-        gate_pos["y"] *= -1
-        gate_orientations = (gate_pos_df["theta"].values + np.pi) % (2*np.pi) - 3/2 * np.pi
+        gate_orientations = gate_pos_df["theta"].values - np.pi/2
+        gate_orientations = (gate_orientations + np.pi) % (2*np.pi) - np.pi
         gate_widths = gate_pos_df["width"].values
         gate_heights = gate_pos_df["height"].values
 
@@ -385,7 +393,7 @@ class MotionPlanner3D():
         plt.show()
 
 if __name__ == "__main__":
-    csv_file_path = "racing/gate_pos_csv/gates_info_measured.csv"
+    csv_file_path = config.GATE_POS_CSV_PATH
     test = MotionPlanner3D(gate_pos_csv_path=csv_file_path, verbose=False)
     gates_df = pd.read_csv(csv_file_path)
     plot_gates(gates_df, show_plot=True)

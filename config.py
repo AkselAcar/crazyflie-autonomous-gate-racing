@@ -155,7 +155,7 @@ VISUAL_SERVO_K_V_FALLBACK: float = 0.5
 VISUAL_SERVO_MAX_OFFSET: float = 0.4  # m — hard clamp on each axis
 
 # High-Level Commander durations (seconds). Tune per phase to control speed.
-HLC_TAKEOFF_DURATION: float = 2.0
+HLC_TAKEOFF_DURATION: float = 3.0
 HLC_LAND_DURATION: float = 2.5
 HLC_YAW_SCAN_DURATION: float = 3.0      # full sweep across the yaw range
 HLC_APPROACH_TICK_DURATION: float = 1.5  # per re-issued go_to during triangulation
