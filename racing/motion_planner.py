@@ -63,7 +63,7 @@ class MotionPlanner3D():
         gate_pos_df["y"] = -gate_pos_df["y"]
 
         gate_pos = gate_pos_df[["x", "y", "z"]].values.T
-        gate_orientations = gate_pos_df["theta"].values - np.pi/2
+        gate_orientations = gate_pos_df["theta"].values + np.pi/2
         gate_orientations = (gate_orientations + np.pi) % (2*np.pi) - np.pi
         gate_widths = gate_pos_df["width"].values
         gate_heights = gate_pos_df["height"].values
@@ -394,7 +394,7 @@ class MotionPlanner3D():
 
 if __name__ == "__main__":
     csv_file_path = config.GATE_POS_CSV_PATH
-    test = MotionPlanner3D(gate_pos_csv_path=csv_file_path, verbose=False)
+    test = MotionPlanner3D(np.array([0, 0, 1]), gate_pos_csv_path=csv_file_path, verbose=False)
     gates_df = pd.read_csv(csv_file_path)
     plot_gates(gates_df, show_plot=True)
     test.plot()
