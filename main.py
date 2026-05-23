@@ -53,6 +53,8 @@ MISSION_TIMEOUT_S: float = 240.0  # safety: assignment hard cap
 # last frame forever; without this check, the FSM's lost-gate timeout
 # never triggers because the same stale image keeps refreshing it.
 MAX_FRAME_AGE_S: float = 0.5
+# Title of the live FPV window (--display). Reused as the cv2 window handle.
+_WINDOW_NAME: str = "Crazyflie FPV"
 
 
 def main() -> None:
@@ -68,6 +70,16 @@ def main() -> None:
     parser.add_argument("--save-every", type=int, default=0,
                         help="save every Nth camera frame as "
                              "[original|mask|annotated] composite (0 = off)")
+    parser.add_argument("--display", action="store_true",
+                        help="show a live window of the drone camera with "
+                             "detected gates drawn on top (press 'q' in the "
+                             "window to abort the mission)")
+    parser.add_argument("--display-mode", choices=("overlay", "composite"),
+                        default="overlay",
+                        help="'overlay' draws detected gate rectangles on the "
+                             "drone view; 'composite' shows "
+                             "[original | mask | annotated] side by side "
+                             "(default: overlay)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="enable DEBUG logging (visual-servo and "
                              "reprojection traces); default level is INFO")
@@ -107,6 +119,9 @@ def main() -> None:
             frames_dir = run_dir / "frames"
             if args.save_every > 0:
                 frames_dir.mkdir(parents=True, exist_ok=True)
+            if args.display:
+                # WINDOW_NORMAL lets the user resize the (small 324x244) feed.
+                cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
             try:
                 while True:
@@ -157,6 +172,19 @@ def main() -> None:
                                     log.error("Save failed at frame %d: %s",
                                               saved_count, e)
 
+                    if args.display:
+                        if image is not None:
+                            annotated, composite = _build_views(image, fsm)
+                            view = (composite if args.display_mode == "composite"
+                                    else annotated)
+                            cv2.imshow(_WINDOW_NAME, view)
+                        # Pump the GUI event loop every tick (even on a stale
+                        # frame) so the window stays responsive and 'q' is
+                        # caught promptly.
+                        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                            log.warning("Quit requested from display window")
+                            break
+
                     if not still_running:
                         log.info("Mission complete")
                         break
@@ -167,6 +195,8 @@ def main() -> None:
             except KeyboardInterrupt:
                 log.warning("Interrupted by user")
             finally:
+                if args.display:
+                    cv2.destroyAllWindows()
                 if args.save_every > 0:
                     log.info("Image save summary: %d saved / %d ticks with "
                              "image / %d ticks without image / %d ticks "
@@ -178,24 +208,44 @@ def main() -> None:
             # before closing the radio link.
 
 
+def _build_views(image: np.ndarray, fsm: GateFSM,
+                 idx: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Run gate detection and build the two BGR debug frames.
+
+    Returns ``(annotated, composite)`` where:
+      * ``annotated`` is the drone view with detected gate rectangles drawn
+        on top (the "overlay" view).
+      * ``composite`` is ``[original | mask | annotated]`` stacked
+        horizontally (the "composite" view).
+
+    Both carry an FSM-state caption in the top-left corner; ``idx`` adds a
+    ``#NNNNN`` frame-number prefix (used when saving to disk, omitted for the
+    live display).
+    """
+    dets = detect_all_gate_contours(image)
+    mask = build_mask(image)
+    annotated = annotate(image, dets)
+    # np.hstack copies, so captioning ``composite`` below does not bleed into
+    # the standalone ``annotated`` frame returned for the overlay view.
+    composite = np.hstack([
+        cv2.cvtColor(image, cv2.COLOR_GRAY2BGR),
+        cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR),
+        annotated,
+    ])
+    state_name = fsm._STATE_NAMES.get(fsm.state, "?")
+    prefix = f"#{idx:05d} " if idx is not None else ""
+    caption = f"{prefix}{state_name} gate={fsm.current_gate} dets={len(dets)}"
+    for frame in (annotated, composite):
+        cv2.putText(frame, caption, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (0, 255, 255), 1, cv2.LINE_AA)
+    return annotated, composite
+
+
 def _save_debug_frame(image: np.ndarray, frames_dir: Path,
                       idx: int, fsm: GateFSM) -> None:
     """Save [original | mask | annotated] composite with FSM state overlay."""
-    dets = detect_all_gate_contours(image)
-    mask = build_mask(image)
-    composed = np.hstack([
-        cv2.cvtColor(image, cv2.COLOR_GRAY2BGR),
-        cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR),
-        annotate(image, dets),
-    ])
-    state_name = fsm._STATE_NAMES.get(fsm.state, "?")
-    cv2.putText(
-        composed,
-        f"#{idx:05d} {state_name} gate={fsm.current_gate} dets={len(dets)}",
-        (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-        (0, 255, 255), 1, cv2.LINE_AA,
-    )
-    cv2.imwrite(str(frames_dir / f"img_{idx:05d}.png"), composed)
+    _, composite = _build_views(image, fsm, idx)
+    cv2.imwrite(str(frames_dir / f"img_{idx:05d}.png"), composite)
 
 
 class _NullStream:

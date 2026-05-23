@@ -110,12 +110,12 @@ APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
 # aim well past the gate to keep non-zero velocity all the way through
 # the TRAVERSE_CLEAR_DIST point (where the gate is declared crossed).
 # Must stay clearly larger than TRAVERSE_CLEAR_DIST.
-TRAVERSE_OVERSHOOT: float = 0.30          # m past the gate plane
+TRAVERSE_OVERSHOOT: float = 0.25          # m past the gate plane
 # Forward distance past the gate plane at which the gate counts as
 # crossed and the FSM moves on to the next gate. The drone effectively
 # stops here, so keep it large enough to fully clear the gate frame
 # instead of halting in the opening.
-TRAVERSE_CLEAR_DIST: float = 0.20         # m past the gate plane
+TRAVERSE_CLEAR_DIST: float = 0.25         # m past the gate plane
 APPROACH_REFINE_ALPHA: float = 0.12       # blend factor per refinement update
 CONVERGENCE_WINDOW: int = 8
 CONVERGENCE_MIN_SAMPLES: int = 6
