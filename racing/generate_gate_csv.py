@@ -214,8 +214,9 @@ def plot_gates(gates_df, show_plot=True):
     colors = plt.cm.tab10(np.linspace(0, 1, len(gates_df)))
 
     for idx, (_, gate) in enumerate(gates_df.iterrows()):
-        x, y  = gate['x'], gate['y']
-        theta = gate['theta']           # surface angle (CSV value)
+        x, y  = 1.0 - gate['x'], -gate['y']
+        theta = gate["theta"] + np.pi           # surface angle (CSV value)
+        theta = (theta + np.pi) % (2*np.pi) - np.pi
         gnum  = int(gate['Gate'])
 
         # Approach normal for CCW flight = surface angle - pi/2
