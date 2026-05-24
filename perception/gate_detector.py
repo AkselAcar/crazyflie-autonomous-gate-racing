@@ -32,15 +32,28 @@ log = logging.getLogger(__name__)
 
 
 def build_mask(image: np.ndarray) -> np.ndarray:
-    """Threshold + morphology, exposed for debug visualization."""
+    """Threshold + morphology, exposed for debug visualization.
+
+    The gate is a ring of *discrete* LEDs separated by several-pixel gaps.
+    We de-speckle first (small MORPH_OPEN), then bridge the gaps with a
+    larger MORPH_CLOSE so the dotted ring welds into one continuous contour
+    with a hole. Ordering is critical: the open MUST run before the close —
+    an open afterwards erodes the thin bridges the close just created and
+    re-fragments the ring (the old pipeline closed then opened, leaving the
+    ring broken so ``detect_all_gate_contours`` found nothing). Kernel sizes
+    live in ``config`` (``MASK_OPEN_KERNEL`` / ``MASK_CLOSE_KERNEL``).
+    """
     if image.ndim == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(
         image, config.LED_BRIGHTNESS_THRESHOLD, 255, cv2.THRESH_BINARY,
     )
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    open_k = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (config.MASK_OPEN_KERNEL, config.MASK_OPEN_KERNEL))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_k, iterations=1)
+    close_k = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (config.MASK_CLOSE_KERNEL, config.MASK_CLOSE_KERNEL))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_k, iterations=1)
     return mask
 
 

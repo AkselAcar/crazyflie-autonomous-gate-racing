@@ -103,6 +103,20 @@ LED_BRIGHTNESS_THRESHOLD: int = 200       # 0–255 grayscale
 DET_MIN_AREA: int = 200                   # px², discards tiny reflections
 DET_BORDER_MARGIN: int = 3                # reject contours touching the border
 
+# Mask morphology — LED-ring reconstruction.
+# The gate is a ring of DISCRETE LEDs with ~7 px gaps (up to ~15 px at the
+# worst points). A MORPH_CLOSE whose kernel exceeds the inter-LED gap welds
+# the dots into one continuous contour; the gate opening (≫ kernel in px)
+# stays a clean hole so the ring/solid-blob discriminator still works.
+# CRITICAL ordering: de-speckle with MORPH_OPEN *before* the close, never
+# after. An open after the close erodes the thin 1–2 px bridges the close
+# just created and re-fragments the ring — that was why detection returned
+# 0 with the old (3×3 close ×2, then open) pipeline.
+MASK_OPEN_KERNEL: int = 3                 # px, removes sub-LED salt noise
+MASK_CLOSE_KERNEL: int = 9                # px, bridges the inter-LED gaps;
+                                          # raise to bridge wider gaps, but
+                                          # keep well below the opening in px
+
 # Approach + reprojection-refinement tuning
 APPROACH_DIST: float = 0.8                # m, smaller arena → closer approach
 # Distance past the gate plane that we command as the traverse target.
@@ -141,12 +155,12 @@ REFINE_REJECT_WIDTH_DRIFT: float = 0.20    # m
 #
 # Start with small gains and increase until the drone centres reliably
 # without oscillating.  Max correction is clamped to VISUAL_SERVO_MAX_OFFSET.
-VISUAL_SERVO_K_H: float = 1.0        # m per unit relative lateral edge imbalance
+VISUAL_SERVO_K_H: float = 1.5        # m per unit relative lateral edge imbalance
 # K_V is now a dimensionless feedback gain on the metric vertical error:
 #   Δz = −K_V × (pixel_err / FOCAL_PX) × dist_to_gate   [metres]
 # Unlike the old edge-asymmetry gain this is pitch-compensated and
 # distance-aware. Start at 1.0 and tune up if the drone under-corrects.
-VISUAL_SERVO_K_V: float = 1.5
+VISUAL_SERVO_K_V: float = 2.0
 # Fallback gain (edge asymmetry) used only when the gate is very close
 # (p_cam[2] < 0.1 m) — same unit as the old K_V (m / dimensionless).
 VISUAL_SERVO_K_V_FALLBACK: float = 0.5
@@ -169,7 +183,7 @@ PLOT_DIR: str = "camera_plots"
 # ===================================================
 #                       LAP 2&3
 # ===================================================
-GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info.csv"
+GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_sunday.csv"
 MOTION_PLANNER_VERBOSE = False
 
 # Onboard stabilizer controller for the racing run: 1=PID, 2=Mellinger.

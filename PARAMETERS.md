@@ -68,6 +68,8 @@ Inventory of every tolerance, limit and tunable constant reachable from
 | `LED_BRIGHTNESS_THRESHOLD` | `200` (0–255) | Grayscale threshold to binarize LED pixels. Raise it if dim background pixels survive the mask, lower it if some LEDs get clipped. |
 | `DET_MIN_AREA` | `200` px² | Minimum contour area to be considered a gate candidate. Filters out small reflections and individual LED specks. |
 | `DET_BORDER_MARGIN` | `3` px | Contours touching the image border by less than this margin are rejected (partial gates would break the corner ordering and the reprojection). |
+| `MASK_OPEN_KERNEL` | `3` px | Ellipse kernel for the de-speckle `MORPH_OPEN`, applied **before** the close, that removes sub-LED salt noise. |
+| `MASK_CLOSE_KERNEL` | `9` px | Ellipse kernel for the `MORPH_CLOSE` that bridges the gaps between discrete LEDs so the dotted ring welds into one continuous contour. Must exceed the inter-LED gap (~7 px, up to ~15 px) but stay well below the gate opening in pixels, or it fills the hole. Raise it if the ring stays broken in the mask view; lower it if distant gates lose their hole. **Order matters**: the open runs before this close — an open *after* the close severs the thin bridges and re-fragments the ring. |
 
 ### Approach & traverse
 
@@ -211,8 +213,7 @@ Inventory of every tolerance, limit and tunable constant reachable from
 
 | Where | Value | Role |
 |---|---|---|
-| `build_mask` | kernel `(3, 3)` | Morphology structuring element. |
-| `build_mask` | `iterations=2` (close), `iterations=1` (open) | Closes gaps between adjacent LEDs, then removes salt noise. |
+| `build_mask` | open-then-close, `iterations=1` each | De-speckle (open) then bridge LED gaps (close). Kernel sizes are now tunable in `config.py` (`MASK_OPEN_KERNEL` / `MASK_CLOSE_KERNEL`); both kernels are `MORPH_ELLIPSE`. |
 | `detect_all_gate_contours` | `0.02 * peri` | Polygon approximation tolerance (fraction of perimeter). Lower = more vertices preserved; higher = more aggressive simplification. |
 | `detect_all_gate_contours` | `aspect < 0.4 or > 2.5` | Aspect-ratio bounds on the 4-corner approximation. Filters extreme rectangles that cannot be gates. |
 | `detect_all_gate_contours` | `1e-3` | Division-by-zero guard on the edge lengths used for the aspect check. |
