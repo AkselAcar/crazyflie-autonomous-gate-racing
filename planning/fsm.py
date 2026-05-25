@@ -143,6 +143,11 @@ class GateFSM:
         # Traverse state
         self._traverse_target: np.ndarray | None = None
         self._traverse_started: bool = False
+        # Flight axis LOCKED at traverse commit (converged-drone → gate-centre
+        # line), used instead of gate.yaw so a poor single-view yaw estimate
+        # can't steer the traverse diagonally across the opening. See
+        # _do_align_traverse for the derivation.
+        self._traverse_dir: np.ndarray | None = None
 
         # Fallback scan state — discrete yaw_scans at 3 viewpoints on the
         # radial at ang_hi of the previous sector. See _init_fallback_scan.
@@ -748,41 +753,54 @@ class GateFSM:
                     and z_settled and xy_settled):
                 commit_z = (self._servo_z_setpoint if self._servo_z_setpoint is not None
                             else drone_pos[2])
-                # Commanded target = TRAVERSE_OVERSHOOT past the gate plane,
-                # in the traversal direction. Anchored on gate.position (not
-                # drone_pos) so the drone actually flies through the gate.
-                # The SAME lateral servo offset used for the align point is
-                # applied here so the traverse flies straight along the
-                # corrected gate axis instead of a diagonal through the
-                # un-corrected reprojected centre (which clipped a leg).
+                # Lock the traverse axis as the line from the converged drone
+                # position to the REPROJECTED gate centre (gate.position) —
+                # NOT gate.yaw. The visual servo has just placed the drone on
+                # the gate's true normal (equal left/right edge lengths), so
+                # aiming straight at the centre crosses the opening
+                # perpendicularly regardless of the weakly observable yaw.
+                #
+                # NB: we aim at gate.position, NOT gate.position+servo_xy. At
+                # convergence drone ≈ gate.position − APPROACH_DIST·trav_dir +
+                # servo_xy, so (gate.position+servo_xy) − drone collapses
+                # algebraically back to APPROACH_DIST·trav_dir → the yaw would
+                # sneak back in. Aiming at the raw reprojected centre keeps the
+                # axis yaw-independent; the servo is still honoured implicitly
+                # through the drone's converged (on-axis) position.
+                center_xy = gate.position[:2]
+                to_center = center_xy - drone_pos[:2]
+                norm = float(np.linalg.norm(to_center))
+                self._traverse_dir = (to_center / norm if norm > 1e-6
+                                      else trav_dir)
                 self._traverse_target = np.array([
-                    gate.position[0] + config.TRAVERSE_OVERSHOOT * trav_dir[0]
-                    + servo_xy[0],
-                    gate.position[1] + config.TRAVERSE_OVERSHOOT * trav_dir[1]
-                    + servo_xy[1],
+                    center_xy[0] + config.TRAVERSE_OVERSHOOT * self._traverse_dir[0],
+                    center_xy[1] + config.TRAVERSE_OVERSHOOT * self._traverse_dir[1],
                     commit_z,
                 ])
                 self._traverse_started = True
                 self._cmd_target = None  # force re-issue
             return
 
-        # Traversing
+        # Traversing. Fly along the axis LOCKED at commit (converged-drone →
+        # gate-centre line), so the path is independent of the gate.yaw
+        # estimate. Falls back to the yaw-derived trav_dir only if the lock
+        # was never set (defensive; it always is by the time we get here).
         target = self._traverse_target
         assert target is not None
-        look_yaw = atan2(trav_dir[1], trav_dir[0])
+        trav_dir_eff = (self._traverse_dir if self._traverse_dir is not None
+                        else trav_dir)
+        look_yaw = atan2(trav_dir_eff[1], trav_dir_eff[0])
         # Use a short duration so we actually fly fast through the plane.
         self._issue_goto(target[0], target[1], target[2], look_yaw,
                          duration=config.HLC_TRAVERSE_DURATION,
                          cur_pos=drone_pos, cur_yaw=sd.yaw)
 
-        # Measure progress against the servo-corrected gate centre (the same
-        # one the traverse target was built from), not the raw reprojection.
+        # Measure progress against the reprojected gate centre (the point the
+        # locked axis aims through), decomposed along that same locked axis.
         center_xy = gate.position[:2]
-        if self._servo_xy_offset is not None:
-            center_xy = center_xy + self._servo_xy_offset
-        forward = float(np.dot(drone_pos[:2] - center_xy, trav_dir))
+        forward = float(np.dot(drone_pos[:2] - center_xy, trav_dir_eff))
         lateral = float(np.linalg.norm(
-            (drone_pos[:2] - center_xy) - forward * trav_dir))
+            (drone_pos[:2] - center_xy) - forward * trav_dir_eff))
         # z_err vs the locked traverse z (set to the drone's z at the
         # moment servo had converged) — NOT vs gate.position[2] which
         # carries the reprojection bias.
@@ -798,6 +816,7 @@ class GateFSM:
                      self.current_gate, forward, lateral)
             self.current_gate += 1
             self._traverse_started = False
+            self._traverse_dir = None
             self._cmd_target = None
             if self.current_gate >= config.NUM_GATES:
                 log.info("All %d gates done — initiating LAND", config.NUM_GATES)

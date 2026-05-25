@@ -100,7 +100,7 @@ class MotionPlanner3D():
             p_exit = p_center.copy()
             p_exit[0] += dx
             p_exit[1] += dy
-            waypoints.append(tuple(p_exit))
+            #waypoints.append(tuple(p_exit))
 
         # Final waypoint: back over the take-off pad at exploration
         # altitude. Placing it far from the last gate (rather than just
@@ -394,7 +394,7 @@ class MotionPlanner3D():
 
 if __name__ == "__main__":
     csv_file_path = config.GATE_POS_CSV_PATH
-    test = MotionPlanner3D(np.array([0, 0, 1]), gate_pos_csv_path=csv_file_path, verbose=False)
+    test = MotionPlanner3D(np.array([1, 0, 1]), gate_pos_csv_path=csv_file_path, verbose=False)
     gates_df = pd.read_csv(csv_file_path)
     plot_gates(gates_df, show_plot=True)
     test.plot()
