@@ -183,7 +183,7 @@ PLOT_DIR: str = "camera_plots"
 # ===================================================
 #                       LAP 2&3
 # ===================================================
-GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_info_monday.csv"
+GATE_POS_CSV_PATH = "racing/gate_pos_csv/gates_radians.csv"
 MOTION_PLANNER_VERBOSE = False
 
 # Onboard stabilizer controller for the racing run: 1=PID, 2=Mellinger.
